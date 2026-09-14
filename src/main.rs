@@ -808,13 +808,14 @@ async fn run_interactive_menu(path: &Path, config: &mut AppConfig, cli: &Cli) ->
     loop {
         println!();
         println!("  [1] Configurar o agente");
-        println!("  [2] Iniciar o agente");
-        println!("  [3] Reconfigurar");
-        println!("  [4] Ver status");
-        println!("  [5] Diagnóstico");
-        println!("  [6] Gerenciar skills");
-        println!("  [7] Ajuda");
-        println!("  [0] Sair");
+        println!("  [2] Provider e API");
+        println!("  [3] Canais");
+        println!("  [4] Gateway e interface");
+        println!("  [5] Segurança e recursos");
+        println!("  [6] Memória, identidade e workspace");
+        println!("  [7] Skills, ferramentas e automações");
+        println!("  [8] Iniciar, status, ajuda e sair");
+        println!("  [0] Voltar/encerrar");
         print!("  Escolha uma opção: ");
         std::io::stdout().flush()?;
         let mut choice = String::new();
@@ -824,7 +825,492 @@ async fn run_interactive_menu(path: &Path, config: &mut AppConfig, cli: &Cli) ->
                 run_setup(path, config, cli, true, true)?;
                 println!("  Configuração concluída. Escolha [2] para iniciar.");
             }
+            "2" => run_provider_menu(path, config, cli).await?,
+            "3" => run_channel_menu(path, config, cli).await?,
+            "4" => run_gateway_menu(path, config, cli)?,
+            "5" => run_security_menu(path, config, cli)?,
+            "6" => run_memory_menu(path, config, cli)?,
+            "7" => run_skills_tools_menu(path, config, cli)?,
+            "8" => {
+                if run_control_menu(path, config, cli).await? {
+                    break;
+                }
+            }
+            "0" | "q" | "Q" => {
+                println!("  Sapiens Agent encerrado.");
+                break;
+            }
+            _ => println!("  Opção inválida. Escolha um número do menu."),
+        }
+    }
+    Ok(())
+}
+
+fn menu_choice(label: &str) -> Result<String> {
+    print!("  {label}: ");
+    std::io::stdout().flush()?;
+    let mut choice = String::new();
+    std::io::stdin().read_line(&mut choice)?;
+    Ok(choice.trim().to_string())
+}
+
+fn save_menu_config(path: &Path, config: &AppConfig) -> Result<()> {
+    config::save(path, config)?;
+    println!("  Configuração salva com validação.");
+    Ok(())
+}
+
+fn edit_menu_value(
+    path: &Path,
+    config: &mut AppConfig,
+    key: &str,
+    label: &str,
+    default: &str,
+) -> Result<()> {
+    let value = setup_ask(label, default, false, true)?;
+    config::set_value(config, key, &value)?;
+    save_menu_config(path, config)
+}
+
+fn edit_menu_bool(
+    path: &Path,
+    config: &mut AppConfig,
+    key: &str,
+    label: &str,
+    default: bool,
+) -> Result<()> {
+    let value = setup_ask_bool(label, default, false, true)?;
+    config::set_value(config, key, &value.to_string())?;
+    save_menu_config(path, config)
+}
+
+async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    loop {
+        println!("\n  Provider e API");
+        println!("  [1] Listar providers");
+        println!("  [2] Ver catálogo e protocolos");
+        println!("  [3] Adicionar provider");
+        println!("  [4] Configurar provider existente");
+        println!("  [5] Testar conexão");
+        println!("  [6] Listar modelos");
+        println!("  [7] Selecionar provider ativo");
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => provider_command(config, path, ProviderCommands::List, cli).await?,
+            "2" => provider_command(config, path, ProviderCommands::Catalog, cli).await?,
+            "3" => {
+                let kind = setup_ask("Tipo do provider", "custom", false, true)?;
+                let alias = setup_ask("Alias", &kind, false, true)?;
+                let base_url = setup_ask("URL base", "", false, true)?;
+                let model = setup_ask("Modelo", "", false, true)?;
+                let api_key_env = setup_ask(
+                    "Variável da chave (nunca a chave)",
+                    "SAPIENS_API_KEY",
+                    false,
+                    true,
+                )?;
+                let protocol = setup_ask("Protocolo", "chat_completions", false, true)?;
+                provider_command(
+                    config,
+                    path,
+                    ProviderCommands::Add {
+                        kind,
+                        alias: Some(alias),
+                        base_url: Some(base_url),
+                        api_key_env: Some(api_key_env),
+                        model: Some(model),
+                        protocol: Some(protocol),
+                    },
+                    cli,
+                )
+                .await?;
+            }
+            "4" => {
+                let alias = setup_ask("Alias existente", "principal", false, true)?;
+                provider_command(config, path, ProviderCommands::Configure { alias }, cli).await?;
+            }
+            "5" => {
+                let alias = setup_ask(
+                    "Alias para testar",
+                    config.active_provider.as_deref().unwrap_or("principal"),
+                    false,
+                    true,
+                )?;
+                provider_command(config, path, ProviderCommands::Test { alias }, cli).await?;
+            }
+            "6" => {
+                let alias = setup_ask(
+                    "Alias para listar modelos",
+                    config.active_provider.as_deref().unwrap_or("principal"),
+                    false,
+                    true,
+                )?;
+                provider_command(config, path, ProviderCommands::Models { alias }, cli).await?;
+            }
+            "7" => {
+                let alias = setup_ask(
+                    "Alias ativo",
+                    config.active_provider.as_deref().unwrap_or("principal"),
+                    false,
+                    true,
+                )?;
+                provider_command(config, path, ProviderCommands::Use { alias }, cli).await?;
+            }
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
+}
+
+async fn run_channel_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    loop {
+        println!("\n  Canais");
+        println!("  [1] Listar catálogo e status");
+        println!("  [2] Adicionar canal");
+        println!("  [3] Configurar canal");
+        println!("  [4] Testar canal");
+        println!("  [5] Iniciar canais habilitados");
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => channel_command(config, path, ChannelCommands::List, cli).await?,
             "2" => {
+                let kind = setup_ask("Tipo do canal", "telegram", false, true)?;
+                let name = setup_ask("Nome da configuração", &kind, false, true)?;
+                channel_command(
+                    config,
+                    path,
+                    ChannelCommands::Add {
+                        kind,
+                        name: Some(name),
+                    },
+                    cli,
+                )
+                .await?;
+            }
+            "3" => {
+                let name = setup_ask("Nome do canal", "telegram", false, true)?;
+                channel_command(config, path, ChannelCommands::Configure { name }, cli).await?;
+            }
+            "4" => {
+                let name = setup_ask("Nome do canal para testar", "telegram", false, true)?;
+                channel_command(config, path, ChannelCommands::Test { name }, cli).await?;
+            }
+            "5" => channel_command(config, path, ChannelCommands::Start, cli).await?,
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
+}
+
+fn run_gateway_menu(path: &Path, config: &mut AppConfig, _cli: &Cli) -> Result<()> {
+    loop {
+        println!("\n  Gateway e interface");
+        println!("  [1] Bind: {}", config.server.bind);
+        println!(
+            "  [2] Autenticação (variável de ambiente): {}",
+            config.server.auth_env
+        );
+        println!("  [3] Interface: {}", config.interface.mode);
+        println!(
+            "  [4] Abrir navegador automaticamente: {}",
+            config.interface.auto_open_browser
+        );
+        println!(
+            "  [5] Rate limit: {} req/min",
+            config.security.max_requests_per_minute
+        );
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => edit_menu_value(
+                path,
+                config,
+                "server.bind",
+                "Bind (ex.: 127.0.0.1:8787)",
+                &config.server.bind.clone(),
+            )?,
+            "2" => edit_menu_value(
+                path,
+                config,
+                "server.auth_env",
+                "Variável de autenticação (vazio para desativar)",
+                &config.server.auth_env.clone(),
+            )?,
+            "3" => edit_menu_value(
+                path,
+                config,
+                "interface.mode",
+                "Interface [powershell/web/both]",
+                &config.interface.mode.clone(),
+            )?,
+            "4" => edit_menu_bool(
+                path,
+                config,
+                "interface.auto_open_browser",
+                "Abrir navegador automaticamente?",
+                config.interface.auto_open_browser,
+            )?,
+            "5" => edit_menu_value(
+                path,
+                config,
+                "security.max_requests_per_minute",
+                "Máximo de requisições por minuto",
+                &config.security.max_requests_per_minute.to_string(),
+            )?,
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
+}
+
+fn run_security_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    loop {
+        println!("\n  Segurança e recursos");
+        println!("  [1] Modo de segurança: {}", config.security.mode);
+        println!(
+            "  [2] Workspace permitido: {}",
+            config.security.workspace.display()
+        );
+        println!(
+            "  [3] Domínios permitidos: {}",
+            config.security.allowed_domains.join(",")
+        );
+        println!(
+            "  [4] Permitir redes privadas: {}",
+            config.security.allow_private_networks
+        );
+        println!("  [5] Perfil de recursos: {}", config.resources.profile);
+        println!("  [6] Limites GPU/CPU/memória/concurrency");
+        println!("  [7] Shell allowlist e limites");
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => edit_menu_value(
+                path,
+                config,
+                "security.mode",
+                "Modo [readonly/supervised/trusted]",
+                &config.security.mode.clone(),
+            )?,
+            "2" => edit_menu_value(
+                path,
+                config,
+                "security.workspace",
+                "Workspace",
+                &config.security.workspace.display().to_string(),
+            )?,
+            "3" => edit_menu_value(
+                path,
+                config,
+                "security.allowed_domains",
+                "Domínios separados por vírgula",
+                &config.security.allowed_domains.join(","),
+            )?,
+            "4" => edit_menu_bool(
+                path,
+                config,
+                "security.allow_private_networks",
+                "Permitir redes privadas?",
+                config.security.allow_private_networks,
+            )?,
+            "5" => {
+                let profile = setup_ask(
+                    "Perfil [economy/balanced/performance/custom]",
+                    &config.resources.profile,
+                    false,
+                    true,
+                )?;
+                resources_command(
+                    config,
+                    path,
+                    ResourceCommands::Profile { name: profile },
+                    cli,
+                )?;
+            }
+            "6" => {
+                edit_menu_value(
+                    path,
+                    config,
+                    "resources.max_gpu_percent",
+                    "GPU máxima (1-100)",
+                    &config.resources.max_gpu_percent.to_string(),
+                )?;
+                edit_menu_value(
+                    path,
+                    config,
+                    "resources.max_cpu_percent",
+                    "CPU máxima (1-100)",
+                    &config.resources.max_cpu_percent.to_string(),
+                )?;
+                edit_menu_value(
+                    path,
+                    config,
+                    "resources.max_memory_mb",
+                    "Memória máxima em MB",
+                    &config.resources.max_memory_mb.to_string(),
+                )?;
+                edit_menu_value(
+                    path,
+                    config,
+                    "resources.max_concurrent",
+                    "Concorrência máxima",
+                    &config.resources.max_concurrent.to_string(),
+                )?;
+            }
+            "7" => {
+                edit_menu_value(
+                    path,
+                    config,
+                    "shell.allowlist",
+                    "Executáveis permitidos separados por vírgula",
+                    &config.shell.allowlist.join(","),
+                )?;
+                edit_menu_value(
+                    path,
+                    config,
+                    "shell.max_output_bytes",
+                    "Saída máxima em bytes",
+                    &config.shell.max_output_bytes.to_string(),
+                )?;
+                edit_menu_value(
+                    path,
+                    config,
+                    "shell.max_memory_mb",
+                    "Memória do shell em MB",
+                    &config.shell.max_memory_mb.to_string(),
+                )?;
+                edit_menu_value(
+                    path,
+                    config,
+                    "shell.max_processes",
+                    "Processos máximos",
+                    &config.shell.max_processes.to_string(),
+                )?;
+                edit_menu_value(
+                    path,
+                    config,
+                    "shell.max_cpu_secs",
+                    "CPU máxima do shell em segundos",
+                    &config.shell.max_cpu_secs.to_string(),
+                )?;
+            }
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
+}
+
+fn run_memory_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    loop {
+        println!("\n  Memória, identidade e workspace");
+        println!("  [1] Ativar memória: {}", config.features.memory);
+        println!(
+            "  [2] Retenção: {} dias (0 = ilimitada)",
+            config.memory_retention_days
+        );
+        println!("  [3] Inicializar arquivos de identidade");
+        println!("  [4] Mostrar identidade redigida");
+        println!("  [5] Mostrar caminhos de identidade");
+        println!("  [6] Listar sessões");
+        println!("  [7] Exportar memória");
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => edit_menu_bool(
+                path,
+                config,
+                "features.memory",
+                "Ativar memória?",
+                config.features.memory,
+            )?,
+            "2" => edit_menu_value(
+                path,
+                config,
+                "memory_retention_days",
+                "Retenção em dias",
+                &config.memory_retention_days.to_string(),
+            )?,
+            "3" => identity_command(path, IdentityCommands::Init, cli)?,
+            "4" => identity_command(path, IdentityCommands::Show, cli)?,
+            "5" => identity_command(path, IdentityCommands::Path, cli)?,
+            "6" => session_command(path, SessionCommands::List, cli)?,
+            "7" => memory_command(config, path, MemoryCommands::Export { path: None }, cli)?,
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
+}
+
+fn run_skills_tools_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    loop {
+        println!("\n  Skills, ferramentas e automações");
+        println!("  [1] Listar/validar skills");
+        println!("  [2] Sugerir skill para tarefas repetitivas");
+        println!("  [3] Criar skill candidata");
+        println!("  [4] Listar ferramentas e estados");
+        println!("  [5] Listar automações");
+        println!("  [6] Alternar browser");
+        println!("  [7] Alternar computer use");
+        println!("  [8] Alternar áudio opcional");
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => skills_command(config, path, SkillsCommands::List, cli)?,
+            "2" => skills_command(config, path, SkillsCommands::Suggest, cli)?,
+            "3" => {
+                let name = setup_ask("Nome da skill", "nova-skill", false, true)?;
+                let purpose = setup_ask("Propósito", "Workflow reutilizável local", false, true)?;
+                skills_command(config, path, SkillsCommands::Create { name, purpose }, cli)?;
+            }
+            "4" => tools_command(
+                config,
+                path,
+                ToolCommands::List {
+                    enabled_only: false,
+                },
+                cli,
+            )?,
+            "5" => schedule_command(config, path, ScheduleCommands::List, cli)?,
+            "6" => edit_menu_bool(
+                path,
+                config,
+                "features.browser",
+                "Ativar browser?",
+                config.features.browser,
+            )?,
+            "7" => edit_menu_bool(
+                path,
+                config,
+                "features.computer_use",
+                "Ativar computer use?",
+                config.features.computer_use,
+            )?,
+            "8" => edit_menu_bool(
+                path,
+                config,
+                "features.audio",
+                "Ativar áudio opcional?",
+                config.features.audio,
+            )?,
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
+}
+
+async fn run_control_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<bool> {
+    loop {
+        println!("\n  Controle do agente");
+        println!("  [1] Iniciar gateway");
+        println!("  [2] Ver status");
+        println!("  [3] Diagnóstico");
+        println!("  [4] Reconfigurar agente");
+        println!("  [5] Ajuda completa");
+        println!("  [0] Sair do menu");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => {
                 let bind = bind_for(config, cli.port)?;
                 println!("  Iniciando o gateway no CMD. Use Ctrl+C para parar.");
                 run_server(
@@ -836,23 +1322,18 @@ async fn run_interactive_menu(path: &Path, config: &mut AppConfig, cli: &Cli) ->
                 .await?;
                 println!("  Gateway encerrado.");
             }
-            "3" => run_setup(path, config, cli, false, true)?,
-            "4" => print_status(config, path, cli)?,
-            "5" => doctor(config, path, cli)?,
-            "6" => skills_command(config, path, SkillsCommands::List, cli)?,
-            "7" => {
+            "2" => print_status(config, path, cli)?,
+            "3" => doctor(config, path, cli)?,
+            "4" => run_setup(path, config, cli, false, true)?,
+            "5" => {
                 let mut command = Cli::command();
                 command.print_help()?;
                 println!();
             }
-            "0" | "q" | "Q" => {
-                println!("  Sapiens Agent encerrado.");
-                break;
-            }
-            _ => println!("  Opção inválida. Escolha um número do menu."),
+            "0" | "q" | "Q" => return Ok(true),
+            _ => println!("  Opção inválida."),
         }
     }
-    Ok(())
 }
 
 fn initialize(path: &Path, config: &mut AppConfig, workspace: Option<&Path>) -> Result<()> {

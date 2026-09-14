@@ -462,8 +462,8 @@ story.extend(
         ),
         rich("Evidencia de release", styles["Section"]),
         p(
-            "O release Windows validado mede 5.035.520 bytes e possui SHA-256 "
-            "267D49677C0C01E8041A16F13B39DCF0D70BEDDDBBAFFA0A5D565738E5B2951A. "
+            "O release Windows validado mede 5.052.416 bytes e possui SHA-256 "
+            "36FDC5DAAB1343D1ABA4F804F8BDE0C2563F1F5254B9962FE18A9E55CF174578. "
             "A documentacao detalhada esta em docs/ARCHITECTURE.md e docs/CAPABILITIES.md.",
             styles["Body"],
         ),

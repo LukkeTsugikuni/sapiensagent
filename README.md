@@ -104,7 +104,7 @@ O servidor escuta apenas `127.0.0.1:8787` por padrão. A WebUI está em `http://
 - Resposta do gateway com provider efetivamente usado, latência e motivo redigido de fallback; `provider test --json` mede saúde e status.
 - Channel Registry com catálogo amplo, adapters locais CLI/WebChat/HTTP/WebSocket/webhook, configuração por variável de ambiente, allowlist e teste explícito de adapter.
 - Comandos operacionais `restart`, `channel`, `skills`, `logs`, `version` e `help`.
-- Menu interativo no PowerShell/CMD para configurar, iniciar, diagnosticar e sair sem uma pausa silenciosa.
+- Menu interativo no PowerShell/CMD, organizado em 8 áreas, para configurar, iniciar, diagnosticar e sair sem uma pausa silenciosa.
 - Skills reais em `skills/`, com `SKILL.md`, validação, habilitação, desabilitação e rollback. A `skill-forge` analisa receipts repetidos e cria candidatas revisáveis sem conceder permissões externas automaticamente.
 - WebUI local com dashboard, configuração rápida, canais/mídia, skills, recursos e chat; ela usa a mesma configuração do PowerShell e só é aberta com solicitação explícita.
 - Perfis de recursos `economy`, `balanced`, `performance` e `custom`, com limites configuráveis de GPU, CPU, memória e concorrência. GPU é permitida, mas governada para não monopolizar a máquina.

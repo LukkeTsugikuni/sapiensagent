@@ -399,6 +399,8 @@ pub fn get_value(config: &AppConfig, key: &str) -> Result<String> {
         "shell.max_cpu_secs" => config.shell.max_cpu_secs.to_string(),
         "security.mode" => config.security.mode.clone(),
         "security.workspace" => config.security.workspace.display().to_string(),
+        "security.allowed_domains" => config.security.allowed_domains.join(","),
+        "security.allow_private_networks" => config.security.allow_private_networks.to_string(),
         "security.max_requests_per_minute" => config.security.max_requests_per_minute.to_string(),
         "memory_retention_days" => config.memory_retention_days.to_string(),
         "features.browser" => config.features.browser.to_string(),
@@ -537,6 +539,17 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<()> {
             config.security.mode = value.to_string()
         }
         "security.workspace" => config.security.workspace = PathBuf::from(value),
+        "security.allowed_domains" => {
+            config.security.allowed_domains = value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_ascii_lowercase)
+                .collect();
+        }
+        "security.allow_private_networks" => {
+            config.security.allow_private_networks = parse_bool(value)?
+        }
         "security.max_requests_per_minute" => {
             let limit = value
                 .parse::<u32>()

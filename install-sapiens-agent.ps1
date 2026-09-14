@@ -8,15 +8,18 @@ $ErrorActionPreference = 'Stop'
 $sapiensRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sapiensBinary = Join-Path $sapiensRoot 'target\release\sapiens-agent.exe'
 $userBin = Join-Path $env:LOCALAPPDATA 'SapiensAgent\bin'
+$installedBinary = Join-Path $userBin 'sapiens-agent-runtime.exe'
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $pathEntries = @($userPath -split ';' | Where-Object { $_ -and $_.Trim() })
-$pathTargets = @($sapiensRoot, $userBin)
-$missingPathTargets = @($pathTargets | Where-Object {
-    $target = $_
-    -not ($pathEntries | Where-Object {
-        [StringComparer]::OrdinalIgnoreCase.Equals($_.TrimEnd('\'), $target.TrimEnd('\'))
+$pathTargets = @($userBin, $sapiensRoot)
+$managedPathEntries = @($pathEntries | Where-Object {
+    $entry = $_.TrimEnd('\')
+    -not ($pathTargets | Where-Object {
+        [StringComparer]::OrdinalIgnoreCase.Equals($entry, $_.TrimEnd('\'))
     })
 })
+$desiredPathEntries = @($userBin) + $managedPathEntries + @($sapiensRoot)
+$pathNeedsUpdate = (($pathEntries -join ';') -ne ($desiredPathEntries -join ';'))
 
 if (-not $SkipBuild -and ($Rebuild -or -not (Test-Path -LiteralPath $sapiensBinary))) {
     if ($DryRun) {
@@ -60,22 +63,23 @@ if (Test-Path -LiteralPath $sapiensBinary) {
 
 if ($DryRun) {
     Write-Host "[dry-run] criar lancadores globais em: $userBin"
-    Write-Host "[dry-run] adicionar ao PATH do usuario: $($missingPathTargets -join '; ')"
+    Write-Host "[dry-run] priorizar no PATH do usuario: $userBin"
 } else {
     New-Item -ItemType Directory -Force -Path $userBin | Out-Null
-    $launcher = "@echo off`r`n`"$sapiensBinary`" %*`r`n"
+    Copy-Item -LiteralPath $sapiensBinary -Destination $installedBinary -Force
+    $launcher = "@echo off`r`n`"$installedBinary`" %*`r`n"
     foreach ($name in @('sapiens.cmd', 'sapiens-agent.cmd')) {
         Set-Content -LiteralPath (Join-Path $userBin $name) -Value $launcher -Encoding ascii
     }
 }
 
-if ($missingPathTargets.Count -gt 0) {
+if ($pathNeedsUpdate) {
     if ($DryRun) {
         Write-Host "[dry-run] PATH sera atualizado para o proximo PowerShell"
     } else {
-        $newPath = (($pathEntries + $missingPathTargets) -join ';')
+        $newPath = ($desiredPathEntries -join ';')
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-        $env:Path = (($missingPathTargets -join ';') + ";$env:Path")
+        $env:Path = (($userBin, $sapiensRoot -join ';') + ";$env:Path")
     }
 }
 
