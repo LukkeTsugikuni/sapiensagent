@@ -1,6 +1,6 @@
 # Sapiens Agent — MVP leve e local-first
 
-> A especificação canônica da experiência de inicialização e configuração está em [PROMPT_MESTRE_SAPIENS_AGENT.md](PROMPT_MESTRE_SAPIENS_AGENT.md). A separação entre capacidades prontas e opcionais está em [docs/CAPABILITIES.md](docs/CAPABILITIES.md). O catálogo completo de funções está em [output/pdf/sapiens-agent-catalogo-de-funcoes.pdf](output/pdf/sapiens-agent-catalogo-de-funcoes.pdf).
+> A especificação canônica da experiência de inicialização e configuração está em [PROMPT_MESTRE_SAPIENS_AGENT.md](PROMPT_MESTRE_SAPIENS_AGENT.md). A matriz de auditoria MyClaw/ZeroClaw está em [docs/CONFIGURATION_AUDIT.md](docs/CONFIGURATION_AUDIT.md). A separação entre capacidades prontas e opcionais está em [docs/CAPABILITIES.md](docs/CAPABILITIES.md). O catálogo completo de funções está em [output/pdf/sapiens-agent-catalogo-de-funcoes.pdf](output/pdf/sapiens-agent-catalogo-de-funcoes.pdf).
 
 Este repositório implementa o primeiro incremento executável da especificação em `PROMPT_MESTRE_SAPIENS_AGENT.md`. O núcleo é Rust assíncrono e não requer GPU, CUDA, Node.js ou Python para iniciar. O runtime não embute modelo: ele usa providers remotos compatíveis, Anthropic, Gemini ou Ollama local, sempre configurados pelo usuário.
 
