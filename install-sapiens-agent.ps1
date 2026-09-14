@@ -7,9 +7,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $sapiensRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sapiensBinary = Join-Path $sapiensRoot 'target\release\sapiens-agent.exe'
+$userBin = Join-Path $env:LOCALAPPDATA 'SapiensAgent\bin'
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $pathEntries = @($userPath -split ';' | Where-Object { $_ -and $_.Trim() })
-$alreadyInstalled = $pathEntries | Where-Object { [StringComparer]::OrdinalIgnoreCase.Equals($_.TrimEnd('\'), $sapiensRoot.TrimEnd('\')) }
+$pathTargets = @($sapiensRoot, $userBin)
+$missingPathTargets = @($pathTargets | Where-Object {
+    $target = $_
+    -not ($pathEntries | Where-Object {
+        [StringComparer]::OrdinalIgnoreCase.Equals($_.TrimEnd('\'), $target.TrimEnd('\'))
+    })
+})
 
 if (-not $SkipBuild -and ($Rebuild -or -not (Test-Path -LiteralPath $sapiensBinary))) {
     if ($DryRun) {
@@ -47,15 +54,28 @@ if (-not $SkipBuild -and ($Rebuild -or -not (Test-Path -LiteralPath $sapiensBina
 if (Test-Path -LiteralPath $sapiensBinary) {
     $hash = (Get-FileHash -LiteralPath $sapiensBinary -Algorithm SHA256).Hash
     Write-Host "Release SHA-256: $hash"
+} elseif (-not $DryRun) {
+    throw "release binary not found: $sapiensBinary. Run without -SkipBuild to compile it."
 }
 
-if (-not $alreadyInstalled) {
+if ($DryRun) {
+    Write-Host "[dry-run] criar lancadores globais em: $userBin"
+    Write-Host "[dry-run] adicionar ao PATH do usuario: $($missingPathTargets -join '; ')"
+} else {
+    New-Item -ItemType Directory -Force -Path $userBin | Out-Null
+    $launcher = "@echo off`r`n`"$sapiensBinary`" %*`r`n"
+    foreach ($name in @('sapiens.cmd', 'sapiens-agent.cmd')) {
+        Set-Content -LiteralPath (Join-Path $userBin $name) -Value $launcher -Encoding ascii
+    }
+}
+
+if ($missingPathTargets.Count -gt 0) {
     if ($DryRun) {
-        Write-Host "[dry-run] adicionar ao PATH do usuario: $sapiensRoot"
+        Write-Host "[dry-run] PATH sera atualizado para o proximo PowerShell"
     } else {
-        $newPath = (($pathEntries + $sapiensRoot) -join ';')
+        $newPath = (($pathEntries + $missingPathTargets) -join ';')
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-        $env:Path = "$sapiensRoot;$env:Path"
+        $env:Path = (($missingPathTargets -join ';') + ";$env:Path")
     }
 }
 
@@ -64,5 +84,5 @@ if ($DryRun) {
 } else {
     Write-Host 'Sapiens Agent instalado.'
 }
-Write-Host 'Abra um novo CMD e use: sapiens-agent ou sapiens'
-Write-Host 'Inicio: sapiens-agent start   |   Configuracao: sapiens-agent setup'
+Write-Host 'Feche este terminal, abra um novo PowerShell e use: sapiens'
+Write-Host 'Inicio direto: sapiens start   |   Configuracao: sapiens setup'

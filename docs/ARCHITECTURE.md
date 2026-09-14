@@ -7,7 +7,7 @@ Sapiens Agent é um runtime Rust assíncrono, local-first e sem dependência obr
 ## 2. Decisões
 
 - Rust + Tokio: binário único, cancelamento e I/O assíncrono.
-- Launchers no PATH: `sapiens-agent`/`sapiens` escondem a extensão e os caminhos de build.
+- Launchers globais no PATH do usuário: `sapiens-agent`/`sapiens` escondem a extensão e os caminhos de build; o instalador cria wrappers em `%LOCALAPPDATA%\SapiensAgent\bin`.
 - `reqwest` com rustls: chamada HTTPS sem runtime externo.
 - Configuração TOML: legível e portátil; credenciais são referenciadas por nome de variável de ambiente, nunca armazenadas.
 - JSONL para memória inicial: zero banco obrigatório, fácil exportação; SQLite fica para a fase de retenção/consultas concorrentes.

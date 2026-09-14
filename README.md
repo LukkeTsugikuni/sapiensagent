@@ -8,7 +8,7 @@ Este repositório implementa o primeiro incremento executável da especificaçã
 
 Forma mais fácil no Windows: dê duplo clique em `start-sapiens-agent.cmd`. Ele compila o Sapiens Agent na primeira execução e inicia o servidor local no CMD; nenhum navegador é aberto automaticamente.
 
-Para instalar os comandos no PATH do usuário, execute `install-sapiens-agent.cmd` uma vez e abra um novo CMD. Depois, `sapiens-agent` e `sapiens` encaminham para o runtime sem exigir `.exe`. Para atualizar com verificação e rollback local do release, use `powershell -ExecutionPolicy Bypass -File .\install-sapiens-agent.ps1 -Rebuild`.
+Para instalar os comandos globais no Windows, execute `install-sapiens-agent.cmd` uma vez. Feche o terminal, abra um novo PowerShell normal e digite apenas `sapiens` — funciona de qualquer pasta, sem `.exe` e sem entrar no diretório do projeto. `sapiens start` inicia o gateway diretamente e `sapiens setup` abre a configuração. Para atualizar com verificação e rollback local do release, use `powershell -ExecutionPolicy Bypass -File .\install-sapiens-agent.ps1 -Rebuild`.
 
 Em Linux/macOS, execute `./install-sapiens-agent.sh`; os comandos ficam em `~/.local/bin`. A sintaxe e o dry-run do script POSIX foram verificados no Git Bash; a execução nativa Linux/macOS ainda depende de um runner desses sistemas.
 
