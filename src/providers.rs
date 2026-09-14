@@ -589,6 +589,7 @@ impl ProviderRegistry {
             "model": provider.model,
             "messages": chat_completion_messages(&messages, images),
             "max_tokens": provider.max_tokens,
+            "temperature": provider.temperature,
             "stream": provider.streaming
         });
         let mut last_error = String::from("provider request failed");
@@ -677,6 +678,7 @@ impl ProviderRegistry {
             "model": provider.model,
             "max_tokens": provider.max_tokens,
             "messages": user_messages,
+            "temperature": provider.temperature,
             "stream": provider.streaming,
         });
         if let Some(system) = system {
@@ -772,7 +774,10 @@ impl ProviderRegistry {
             }
             contents.push(json!({"role": role, "parts": parts}));
         }
-        let mut payload = json!({"contents": contents});
+        let mut payload = json!({
+            "contents": contents,
+            "generationConfig": {"temperature": provider.temperature, "maxOutputTokens": provider.max_tokens}
+        });
         if let Some(system_instruction) = system_instruction {
             payload["systemInstruction"] = system_instruction;
         }
@@ -868,7 +873,7 @@ impl ProviderRegistry {
             "model": provider.model,
             "messages": ollama_messages,
             "stream": provider.streaming,
-            "options": {"num_predict": provider.max_tokens},
+            "options": {"num_predict": provider.max_tokens, "temperature": provider.temperature},
         });
         let mut last_error = String::from("Ollama /api/chat request failed");
         for attempt in 0..attempts {
@@ -950,6 +955,7 @@ impl ProviderRegistry {
             "model": provider.model,
             "input": input,
             "max_output_tokens": provider.max_tokens,
+            "temperature": provider.temperature,
             "stream": provider.streaming,
             "store": false,
         });

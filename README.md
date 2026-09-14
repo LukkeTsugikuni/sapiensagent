@@ -18,6 +18,13 @@ Também é possível iniciar sem argumentos:
 
 O comando `sapiens-agent` sem subcomando abre o menu interativo no PowerShell ou CMD. A configuração pode ser feita pelo PowerShell, pelo navegador de forma explícita ou pelos dois modos. Nenhuma interface abre o navegador automaticamente.
 
+O menu principal é dividido em 8 áreas: configuração inicial; provider/API;
+canais; gateway/interface; segurança/recursos; memória/identidade/workspace;
+skills/ferramentas/automações; e iniciar/status/reconfigurar/ajuda/sair. Todas
+as alterações usam a mesma configuração TOML do gateway e da WebUI. A área de
+controle também oferece exportação, importação e restauração do backup
+`config.toml.bak`.
+
 ```powershell
  cargo run
 ```
@@ -57,6 +64,7 @@ sapiens-agent channel test suporte
 sapiens-agent channel send suporte 123 "mensagem" --yes
 sapiens-agent provider add ollama --alias local --base-url http://127.0.0.1:11434 --model qwen3
 sapiens-agent provider use local
+sapiens-agent provider remove local
 sapiens-agent identity init
 sapiens-agent identity show
 sapiens-agent session list
@@ -66,6 +74,9 @@ sapiens-agent skills list
 sapiens-agent logs
 sapiens-agent skills enable shell
 sapiens-agent shell --command "dir" --yes
+sapiens-agent config export .\config.export.toml
+sapiens-agent config import .\config.import.toml
+sapiens-agent config restore
 sapiens-agent computer plan "abrir o bloco de notas e escrever uma saudação" --output computer-plan.json
 sapiens-agent computer run computer-plan.json --yes
 sapiens-agent computer auto "abrir o bloco de notas e escrever uma saudação" --yes

@@ -165,6 +165,9 @@ enum ConfigCommands {
     Get { key: String },
     Set { key: String, value: String },
     Show,
+    Export { path: PathBuf },
+    Import { path: PathBuf },
+    Restore { path: Option<PathBuf> },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -264,6 +267,9 @@ enum ProviderCommands {
         protocol: Option<String>,
     },
     Configure {
+        alias: String,
+    },
+    Remove {
         alias: String,
     },
     Test {
@@ -722,6 +728,40 @@ async fn main() -> Result<()> {
                     serde_json::json!({"key": key, "value": value}),
                 );
             }
+            Some(ConfigCommands::Export { path: destination }) => {
+                export_config(&config, &destination, &cli)?;
+            }
+            Some(ConfigCommands::Import { path: source }) => {
+                if !source.exists() {
+                    anyhow::bail!(
+                        "arquivo de configuração não encontrado: {}",
+                        source.display()
+                    );
+                }
+                let imported = config::load(&source)?;
+                config::save(&path, &imported)?;
+                message(
+                    &cli,
+                    "Configuração importada.",
+                    serde_json::json!({"source": source, "destination": path}),
+                );
+            }
+            Some(ConfigCommands::Restore { path: backup }) => {
+                let source = backup.unwrap_or_else(|| path.with_extension("toml.bak"));
+                if !source.exists() {
+                    anyhow::bail!(
+                        "backup de configuração não encontrado: {}",
+                        source.display()
+                    );
+                }
+                let restored = config::load(&source)?;
+                config::save(&path, &restored)?;
+                message(
+                    &cli,
+                    "Backup restaurado.",
+                    serde_json::json!({"source": source, "destination": path}),
+                );
+            }
         },
         Some(Commands::Start) => {
             print_banner();
@@ -890,10 +930,11 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
         println!("  [1] Listar providers");
         println!("  [2] Ver catálogo e protocolos");
         println!("  [3] Adicionar provider");
-        println!("  [4] Configurar provider existente");
-        println!("  [5] Testar conexão");
-        println!("  [6] Listar modelos");
-        println!("  [7] Selecionar provider ativo");
+        println!("  [4] Configurar provider existente (avançado)");
+        println!("  [5] Remover provider");
+        println!("  [6] Testar conexão");
+        println!("  [7] Listar modelos");
+        println!("  [8] Provider ativo e fallback");
         println!("  [0] Voltar");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => provider_command(config, path, ProviderCommands::List, cli).await?,
@@ -930,6 +971,10 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
                 provider_command(config, path, ProviderCommands::Configure { alias }, cli).await?;
             }
             "5" => {
+                let alias = setup_ask("Alias para remover", "", false, true)?;
+                provider_command(config, path, ProviderCommands::Remove { alias }, cli).await?;
+            }
+            "6" => {
                 let alias = setup_ask(
                     "Alias para testar",
                     config.active_provider.as_deref().unwrap_or("principal"),
@@ -938,7 +983,7 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
                 )?;
                 provider_command(config, path, ProviderCommands::Test { alias }, cli).await?;
             }
-            "6" => {
+            "7" => {
                 let alias = setup_ask(
                     "Alias para listar modelos",
                     config.active_provider.as_deref().unwrap_or("principal"),
@@ -947,14 +992,31 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
                 )?;
                 provider_command(config, path, ProviderCommands::Models { alias }, cli).await?;
             }
-            "7" => {
+            "8" => {
                 let alias = setup_ask(
                     "Alias ativo",
                     config.active_provider.as_deref().unwrap_or("principal"),
                     false,
                     true,
                 )?;
-                provider_command(config, path, ProviderCommands::Use { alias }, cli).await?;
+                config::find_provider(config, &alias)?;
+                let fallback = setup_ask(
+                    "Fallbacks em ordem, separados por vírgula (vazio para limpar)",
+                    &config.fallback.join(","),
+                    false,
+                    true,
+                )?;
+                config.active_provider = Some(alias.clone());
+                config.fallback = fallback
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                for fallback_alias in &config.fallback {
+                    config::find_provider(config, fallback_alias)?;
+                }
+                save_menu_config(path, config)?;
             }
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
@@ -971,6 +1033,7 @@ async fn run_channel_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Res
         println!("  [3] Configurar canal");
         println!("  [4] Testar canal");
         println!("  [5] Iniciar canais habilitados");
+        println!("  [6] Habilitar/desabilitar canal");
         println!("  [0] Voltar");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => channel_command(config, path, ChannelCommands::List, cli).await?,
@@ -997,6 +1060,32 @@ async fn run_channel_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Res
                 channel_command(config, path, ChannelCommands::Test { name }, cli).await?;
             }
             "5" => channel_command(config, path, ChannelCommands::Start, cli).await?,
+            "6" => {
+                let name = setup_ask("Nome do canal", "telegram", false, true)?;
+                let index = config
+                    .channels
+                    .iter()
+                    .position(|item| item.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("canal não encontrado: {name}"))?;
+                let enabled = setup_ask_bool(
+                    "Habilitar este canal?",
+                    config.channels[index].enabled,
+                    false,
+                    true,
+                )?;
+                config.channels[index].enabled = enabled;
+                config.features.channels = config.channels.iter().any(|item| item.enabled);
+                save_menu_config(path, config)?;
+                println!(
+                    "  Canal {}: {}.",
+                    name,
+                    if enabled {
+                        "habilitado"
+                    } else {
+                        "desabilitado"
+                    }
+                );
+            }
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
         }
@@ -1004,7 +1093,7 @@ async fn run_channel_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Res
     Ok(())
 }
 
-fn run_gateway_menu(path: &Path, config: &mut AppConfig, _cli: &Cli) -> Result<()> {
+fn run_gateway_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
     loop {
         println!("\n  Gateway e interface");
         println!("  [1] Bind: {}", config.server.bind);
@@ -1021,6 +1110,8 @@ fn run_gateway_menu(path: &Path, config: &mut AppConfig, _cli: &Cli) -> Result<(
             "  [5] Rate limit: {} req/min",
             config.security.max_requests_per_minute
         );
+        println!("  [6] Listar sessões do gateway");
+        println!("  [7] Ver status do gateway/WebUI");
         println!("  [0] Voltar");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => edit_menu_value(
@@ -1058,6 +1149,8 @@ fn run_gateway_menu(path: &Path, config: &mut AppConfig, _cli: &Cli) -> Result<(
                 "Máximo de requisições por minuto",
                 &config.security.max_requests_per_minute.to_string(),
             )?,
+            "6" => session_command(path, SessionCommands::List, cli)?,
+            "7" => print_status(config, path, cli)?,
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
         }
@@ -1084,6 +1177,11 @@ fn run_security_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<(
         println!("  [5] Perfil de recursos: {}", config.resources.profile);
         println!("  [6] Limites GPU/CPU/memória/concurrency");
         println!("  [7] Shell allowlist e limites");
+        println!("  [8] Listar aprovações persistentes");
+        println!("  [9] Conceder aprovação temporária");
+        println!("  [10] Revogar aprovação");
+        println!("  [11] Emergency stop do computer use");
+        println!("  [12] Resetar emergency stop");
         println!("  [0] Voltar");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => edit_menu_value(
@@ -1195,6 +1293,59 @@ fn run_security_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<(
                     &config.shell.max_cpu_secs.to_string(),
                 )?;
             }
+            "8" => approval_command(config, path, ApprovalCommands::List, cli)?,
+            "9" => {
+                let scope = setup_ask("Escopo (ex.: browser.click)", "", false, true)?;
+                let risk = setup_ask("Risco", "external_write", false, true)?;
+                let expires_secs = setup_ask("Validade em segundos", "3600", false, true)?
+                    .parse()
+                    .context("validade deve ser um número inteiro")?;
+                if setup_ask_bool("Confirmar aprovação?", false, false, true)? {
+                    let mut approved_cli = cli.clone();
+                    approved_cli.yes = true;
+                    approval_command(
+                        config,
+                        path,
+                        ApprovalCommands::Grant {
+                            scope,
+                            risk,
+                            expires_secs,
+                        },
+                        &approved_cli,
+                    )?;
+                } else {
+                    println!("  Aprovação cancelada.");
+                }
+            }
+            "10" => {
+                let scope = setup_ask("Escopo para revogar", "", false, true)?;
+                if setup_ask_bool("Confirmar revogação?", false, false, true)? {
+                    let mut approved_cli = cli.clone();
+                    approved_cli.yes = true;
+                    approval_command(
+                        config,
+                        path,
+                        ApprovalCommands::Revoke { scope },
+                        &approved_cli,
+                    )?;
+                } else {
+                    println!("  Revogação cancelada.");
+                }
+            }
+            "11" => {
+                let stop_path = sapiens_agent::computer::emergency_stop_path(path);
+                std::fs::write(&stop_path, b"stop\n")?;
+                println!("  Emergency stop ativado: {}", stop_path.display());
+            }
+            "12" => {
+                if setup_ask_bool("Confirmar reset do emergency stop?", false, false, true)? {
+                    let stop_path = sapiens_agent::computer::emergency_stop_path(path);
+                    let _ = std::fs::remove_file(&stop_path);
+                    println!("  Emergency stop resetado.");
+                } else {
+                    println!("  Reset cancelado.");
+                }
+            }
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
         }
@@ -1215,6 +1366,8 @@ fn run_memory_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()>
         println!("  [5] Mostrar caminhos de identidade");
         println!("  [6] Listar sessões");
         println!("  [7] Exportar memória");
+        println!("  [8] Backend de memória: {}", config.memory_backend);
+        println!("  [9] Ver arquivos de identidade/workspace");
         println!("  [0] Voltar");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => edit_menu_bool(
@@ -1236,6 +1389,14 @@ fn run_memory_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()>
             "5" => identity_command(path, IdentityCommands::Path, cli)?,
             "6" => session_command(path, SessionCommands::List, cli)?,
             "7" => memory_command(config, path, MemoryCommands::Export { path: None }, cli)?,
+            "8" => edit_menu_value(
+                path,
+                config,
+                "memory_backend",
+                "Backend [jsonl]",
+                &config.memory_backend.clone(),
+            )?,
+            "9" => print_workspace_manifest(config, path)?,
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
         }
@@ -1250,10 +1411,14 @@ fn run_skills_tools_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Resu
         println!("  [2] Sugerir skill para tarefas repetitivas");
         println!("  [3] Criar skill candidata");
         println!("  [4] Listar ferramentas e estados");
-        println!("  [5] Listar automações");
+        println!("  [5] Scheduler, cron e heartbeat");
         println!("  [6] Alternar browser");
         println!("  [7] Alternar computer use");
-        println!("  [8] Alternar áudio opcional");
+        println!("  [8] Alternar shell");
+        println!("  [9] MCP: servidores e diagnóstico");
+        println!("  [10] Plugins: catálogo e verificação");
+        println!("  [11] Logs e receipts");
+        println!("  [12] Alternar áudio opcional");
         println!("  [0] Voltar");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => skills_command(config, path, SkillsCommands::List, cli)?,
@@ -1271,7 +1436,7 @@ fn run_skills_tools_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Resu
                 },
                 cli,
             )?,
-            "5" => schedule_command(config, path, ScheduleCommands::List, cli)?,
+            "5" => run_schedule_menu(path, config, cli)?,
             "6" => edit_menu_bool(
                 path,
                 config,
@@ -1289,6 +1454,19 @@ fn run_skills_tools_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Resu
             "8" => edit_menu_bool(
                 path,
                 config,
+                "features.shell",
+                "Ativar shell?",
+                config.features.shell,
+            )?,
+            "9" => mcp_command(config, path, McpCommands::Servers, cli)?,
+            "10" => plugin_command(config, path, PluginCommands::List { directory: None }, cli)?,
+            "11" => {
+                logs_command(path, cli)?;
+                receipts_command(path, cli)?;
+            }
+            "12" => edit_menu_bool(
+                path,
+                config,
                 "features.audio",
                 "Ativar áudio opcional?",
                 config.features.audio,
@@ -1300,14 +1478,37 @@ fn run_skills_tools_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Resu
     Ok(())
 }
 
+fn export_config(config: &AppConfig, destination: &Path, cli: &Cli) -> Result<()> {
+    if cli.dry_run {
+        message(
+            cli,
+            "Dry-run: configuração não exportada.",
+            serde_json::json!({"destination": destination, "saved": false}),
+        );
+        return Ok(());
+    }
+    config::save(destination, config)?;
+    message(
+        cli,
+        "Configuração exportada sem valores de segredo; apenas referências de credencial foram preservadas.",
+        serde_json::json!({"destination": destination, "saved": true}),
+    );
+    Ok(())
+}
+
 async fn run_control_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<bool> {
     loop {
         println!("\n  Controle do agente");
         println!("  [1] Iniciar gateway");
-        println!("  [2] Ver status");
-        println!("  [3] Diagnóstico");
-        println!("  [4] Reconfigurar agente");
-        println!("  [5] Ajuda completa");
+        println!("  [2] Parar gateway");
+        println!("  [3] Reiniciar gateway");
+        println!("  [4] Ver status");
+        println!("  [5] Diagnóstico");
+        println!("  [6] Reconfigurar agente");
+        println!("  [7] Ajuda completa");
+        println!("  [8] Exportar configuração");
+        println!("  [9] Importar configuração");
+        println!("  [10] Restaurar backup");
         println!("  [0] Sair do menu");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => {
@@ -1322,13 +1523,77 @@ async fn run_control_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Res
                 .await?;
                 println!("  Gateway encerrado.");
             }
-            "2" => print_status(config, path, cli)?,
-            "3" => doctor(config, path, cli)?,
-            "4" => run_setup(path, config, cli, false, true)?,
-            "5" => {
+            "2" => stop_server(path, cli)?,
+            "3" => {
+                stop_server(path, cli)?;
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let bind = bind_for(config, cli.port)?;
+                println!("  Reiniciando o gateway no CMD. Use Ctrl+C para parar.");
+                run_server(
+                    config.clone(),
+                    path,
+                    bind,
+                    cli.open_browser && !cli.no_browser,
+                )
+                .await?;
+            }
+            "4" => print_status(config, path, cli)?,
+            "5" => doctor(config, path, cli)?,
+            "6" => run_setup(path, config, cli, false, true)?,
+            "7" => {
                 let mut command = Cli::command();
                 command.print_help()?;
                 println!();
+            }
+            "8" => {
+                let destination = setup_ask(
+                    "Arquivo de exportação",
+                    &path
+                        .with_file_name("config.export.toml")
+                        .display()
+                        .to_string(),
+                    false,
+                    true,
+                )?;
+                export_config(config, Path::new(&destination), cli)?;
+            }
+            "9" => {
+                let source = setup_ask(
+                    "Arquivo TOML para importar",
+                    "config.import.toml",
+                    false,
+                    true,
+                )?;
+                if setup_ask_bool("Confirmar importação?", false, false, true)? {
+                    if !Path::new(&source).exists() {
+                        anyhow::bail!("arquivo de configuração não encontrado: {source}");
+                    }
+                    let imported = config::load(Path::new(&source))?;
+                    config::save(path, &imported)?;
+                    *config = imported;
+                    println!("  Configuração importada e validada.");
+                } else {
+                    println!("  Importação cancelada.");
+                }
+            }
+            "10" => {
+                let source = setup_ask(
+                    "Backup para restaurar",
+                    &path.with_extension("toml.bak").display().to_string(),
+                    false,
+                    true,
+                )?;
+                if setup_ask_bool("Confirmar restauração?", false, false, true)? {
+                    if !Path::new(&source).exists() {
+                        anyhow::bail!("backup de configuração não encontrado: {source}");
+                    }
+                    let restored = config::load(Path::new(&source))?;
+                    config::save(path, &restored)?;
+                    *config = restored;
+                    println!("  Backup restaurado e validado.");
+                } else {
+                    println!("  Restauração cancelada.");
+                }
             }
             "0" | "q" | "Q" => return Ok(true),
             _ => println!("  Opção inválida."),
@@ -1559,6 +1824,131 @@ fn ask_bool(label: &str, default: bool, automatic: bool) -> Result<bool> {
         value.to_ascii_lowercase().as_str(),
         "s" | "sim" | "y" | "yes"
     ))
+}
+
+fn print_workspace_manifest(config: &AppConfig, path: &Path) -> Result<()> {
+    let identity_dir = path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let files = [
+        "IDENTITY.md",
+        "PREFERENCES.md",
+        "USER.md",
+        "SOUL.md",
+        "AGENTS.md",
+        "HEARTBEAT.md",
+        "TOOLS.md",
+        "MEMORY.md",
+    ];
+    println!("  Workspace: {}", config.security.workspace.display());
+    println!("  Arquivos de identidade em: {}", identity_dir.display());
+    for file in files {
+        let workspace_path = config.security.workspace.join(file);
+        let identity_path = identity_dir.join(file);
+        let status = if workspace_path.exists() || identity_path.exists() {
+            "presente"
+        } else {
+            "ausente (use identidade init ou crie no workspace)"
+        };
+        println!("  - {file}: {status}");
+    }
+    Ok(())
+}
+
+fn run_schedule_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    loop {
+        println!("\n  Scheduler, cron e automações");
+        println!("  [1] Listar tarefas");
+        println!("  [2] Criar tarefa por intervalo");
+        println!("  [3] Criar tarefa única");
+        println!("  [4] Criar tarefa cron UTC");
+        println!("  [5] Pausar/retomar tarefa");
+        println!("  [6] Cancelar tarefa em execução");
+        println!("  [7] Remover tarefa");
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => schedule_command(config, path, ScheduleCommands::List, cli)?,
+            "2" => {
+                let every = setup_ask("Intervalo (ex.: 15m)", "1h", false, true)?;
+                let task = setup_ask("Tarefa", "", false, true)?;
+                schedule_command(
+                    config,
+                    path,
+                    ScheduleCommands::Add {
+                        every,
+                        task,
+                        webhook: None,
+                        channel: None,
+                        recipient: None,
+                    },
+                    cli,
+                )?;
+            }
+            "3" => {
+                let at = setup_ask("Data/hora UTC ISO-8601", "", false, true)?;
+                let task = setup_ask("Tarefa", "", false, true)?;
+                schedule_command(
+                    config,
+                    path,
+                    ScheduleCommands::Once {
+                        at,
+                        task,
+                        webhook: None,
+                        channel: None,
+                        recipient: None,
+                    },
+                    cli,
+                )?;
+            }
+            "4" => {
+                let expression =
+                    setup_ask("Expressão cron de 5 campos UTC", "0 * * * *", false, true)?;
+                let task = setup_ask("Tarefa", "", false, true)?;
+                schedule_command(
+                    config,
+                    path,
+                    ScheduleCommands::Cron {
+                        expression,
+                        task,
+                        webhook: None,
+                        channel: None,
+                        recipient: None,
+                    },
+                    cli,
+                )?;
+            }
+            "5" => {
+                let id = setup_ask("ID da tarefa", "job-", false, true)?;
+                let resume = setup_ask_bool("Retomar (não = pausar)?", true, false, true)?;
+                schedule_command(
+                    config,
+                    path,
+                    if resume {
+                        ScheduleCommands::Resume { id }
+                    } else {
+                        ScheduleCommands::Pause { id }
+                    },
+                    cli,
+                )?;
+            }
+            "6" => {
+                let id = setup_ask("ID da tarefa", "job-", false, true)?;
+                schedule_command(config, path, ScheduleCommands::Cancel { id }, cli)?;
+            }
+            "7" => {
+                let id = setup_ask("ID da tarefa", "job-", false, true)?;
+                if setup_ask_bool("Confirmar remoção?", false, false, true)? {
+                    schedule_command(config, path, ScheduleCommands::Remove { id }, cli)?;
+                } else {
+                    println!("  Remoção cancelada.");
+                }
+            }
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
 }
 
 fn identity_command(path: &Path, command: IdentityCommands, cli: &Cli) -> Result<()> {
@@ -3727,7 +4117,7 @@ async fn channel_command(
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&entries)?);
             } else {
-                println!("CANAL\tADAPTER\tCONFIGURADO\tTRANSPORTE");
+                println!("CANAL\tADAPTER\tCONFIGURADO\tTRANSPORTE\tCAPACIDADES\tCREDENCIAL");
                 for spec in channels::catalog() {
                     let configured = config
                         .channels
@@ -3741,8 +4131,13 @@ async fn channel_command(
                         configured.join(",")
                     };
                     println!(
-                        "{}\t{}\t{}\t{}",
-                        spec.id, spec.adapter, configured_text, spec.transport
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        spec.id,
+                        spec.adapter,
+                        configured_text,
+                        spec.transport,
+                        spec.capabilities,
+                        spec.credential_hint
                     );
                 }
                 println!("* = habilitado; 'opcional' = adapter externo ainda não instalado.");
@@ -4682,6 +5077,145 @@ fn receipts_command(path: &Path, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn configure_provider_fields(provider: &mut ProviderConfig, cli: &Cli) -> Result<()> {
+    provider.kind = setup_ask("Família do provider", &provider.kind, cli.yes, false)?;
+    provider.protocol = setup_ask(
+        "Protocolo [chat_completions/responses/anthropic_messages/gemini/ollama]",
+        &provider.protocol,
+        cli.yes,
+        false,
+    )?;
+    provider.base_url = setup_ask("URL base ou endpoint", &provider.base_url, cli.yes, false)?;
+    provider.model = setup_ask("Modelo", &provider.model, cli.yes, false)?;
+    provider.api_key_env = setup_ask(
+        "Variável da credencial (nunca a chave)",
+        &provider.api_key_env,
+        cli.yes,
+        false,
+    )?;
+    provider.timeout_secs = setup_ask(
+        "Timeout em segundos",
+        &provider.timeout_secs.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("timeout deve ser um número inteiro")?;
+    if provider.timeout_secs == 0 {
+        anyhow::bail!("timeout deve ser maior que zero");
+    }
+    provider.retries = setup_ask(
+        "Tentativas de retry (0-10)",
+        &provider.retries.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("retries deve ser um número inteiro")?;
+    if provider.retries > 10 {
+        anyhow::bail!("retries deve estar entre 0 e 10");
+    }
+    provider.streaming = setup_ask_bool("Ativar streaming?", provider.streaming, cli.yes, false)?;
+    provider.max_input_chars = setup_ask(
+        "Limite de contexto em caracteres",
+        &provider.max_input_chars.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("limite de contexto deve ser um número inteiro")?;
+    if provider.max_input_chars == 0 {
+        anyhow::bail!("limite de contexto deve ser maior que zero");
+    }
+    provider.max_tokens = setup_ask(
+        "Máximo de tokens de saída",
+        &provider.max_tokens.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("max_tokens deve ser um número inteiro")?;
+    if provider.max_tokens == 0 {
+        anyhow::bail!("max_tokens deve ser maior que zero");
+    }
+    provider.temperature = setup_ask(
+        "Temperatura (0-2)",
+        &provider.temperature.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("temperatura deve ser um número")?;
+    if !(0.0..=2.0).contains(&provider.temperature) {
+        anyhow::bail!("temperatura deve estar entre 0 e 2");
+    }
+    provider.budget_usd = setup_ask(
+        "Orçamento máximo em USD (0 = sem limite)",
+        &provider.budget_usd.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("orçamento deve ser um número")?;
+    provider.input_cost_per_1k_tokens = setup_ask(
+        "Custo de entrada por 1k tokens",
+        &provider.input_cost_per_1k_tokens.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("custo de entrada deve ser um número")?;
+    provider.output_cost_per_1k_tokens = setup_ask(
+        "Custo de saída por 1k tokens",
+        &provider.output_cost_per_1k_tokens.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("custo de saída deve ser um número")?;
+    if provider.budget_usd < 0.0
+        || provider.input_cost_per_1k_tokens < 0.0
+        || provider.output_cost_per_1k_tokens < 0.0
+    {
+        anyhow::bail!("orçamento e custos não podem ser negativos");
+    }
+    provider.circuit_breaker_threshold = setup_ask(
+        "Falhas consecutivas para circuit breaker",
+        &provider.circuit_breaker_threshold.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("threshold deve ser um número inteiro")?;
+    if provider.circuit_breaker_threshold == 0 {
+        anyhow::bail!("threshold deve ser maior que zero");
+    }
+    provider.circuit_breaker_cooldown_secs = setup_ask(
+        "Cooldown do circuit breaker em segundos",
+        &provider.circuit_breaker_cooldown_secs.to_string(),
+        cli.yes,
+        false,
+    )?
+    .parse()
+    .context("cooldown deve ser um número inteiro")?;
+    if provider.circuit_breaker_cooldown_secs == 0 {
+        anyhow::bail!("cooldown deve ser maior que zero");
+    }
+    let capabilities = setup_ask(
+        "Capabilities declaradas separadas por vírgula",
+        &provider.capabilities.join(","),
+        cli.yes,
+        false,
+    )?;
+    provider.capabilities = capabilities
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok(())
+}
+
 async fn provider_command(
     config: &mut AppConfig,
     path: &Path,
@@ -4809,21 +5343,41 @@ async fn provider_command(
                 .iter()
                 .position(|item| item.alias == alias)
                 .ok_or_else(|| anyhow::anyhow!("provider não encontrado: {alias}"))?;
-            let base_url = ask("URL base", &config.providers[index].base_url, cli.yes)?;
-            let model = ask("Nome do modelo", &config.providers[index].model, cli.yes)?;
-            let api_key_env = ask(
-                "Variável da chave (nunca a chave)",
-                &config.providers[index].api_key_env,
-                cli.yes,
-            )?;
-            config.providers[index].base_url = base_url;
-            config.providers[index].model = model;
-            config.providers[index].api_key_env = api_key_env;
+            let mut updated = config.providers[index].clone();
+            configure_provider_fields(&mut updated, cli)?;
+            config.providers[index] = updated;
             config::save(path, config)?;
             message(
                 cli,
-                "Provider configurado.",
-                serde_json::json!({"alias": alias}),
+                "Provider configurado com parâmetros avançados.",
+                serde_json::json!({"alias": alias, "saved": true}),
+            );
+        }
+        ProviderCommands::Remove { alias } => {
+            if alias.trim().is_empty() {
+                anyhow::bail!("alias do provider não pode ser vazio");
+            }
+            if !cli.yes && !ask_bool("Confirmar remoção do provider?", false, false)? {
+                println!("Remoção cancelada.");
+                return Ok(());
+            }
+            let before = config.providers.len();
+            config.providers.retain(|provider| provider.alias != alias);
+            if before == config.providers.len() {
+                anyhow::bail!("provider não encontrado: {alias}");
+            }
+            if config.active_provider.as_deref() == Some(alias.as_str()) {
+                config.active_provider = config
+                    .providers
+                    .first()
+                    .map(|provider| provider.alias.clone());
+            }
+            config.fallback.retain(|fallback| fallback != &alias);
+            config::save(path, config)?;
+            message(
+                cli,
+                "Provider removido.",
+                serde_json::json!({"alias": alias, "removed": true}),
             );
         }
         ProviderCommands::Test { alias } => {

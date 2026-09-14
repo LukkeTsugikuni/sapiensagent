@@ -9,7 +9,7 @@ Sapiens Agent é um runtime Rust assíncrono, local-first e sem dependência obr
 - Rust + Tokio: binário único, cancelamento e I/O assíncrono.
 - Launchers globais no PATH do usuário: `sapiens-agent`/`sapiens` escondem a extensão e os caminhos de build; o instalador cria wrappers em `%LOCALAPPDATA%\SapiensAgent\bin`.
 - `reqwest` com rustls: chamada HTTPS sem runtime externo.
-- Configuração TOML: legível e portátil; credenciais são referenciadas por nome de variável de ambiente, nunca armazenadas.
+- Configuração TOML: legível e portátil; credenciais são referenciadas por nome de variável de ambiente, nunca armazenadas. Escritas são serializadas, sincronizadas e substituídas por rename atômico, com backup `.toml.bak` da versão anterior.
 - JSONL para memória inicial: zero banco obrigatório, fácil exportação; SQLite fica para a fase de retenção/consultas concorrentes.
 - `supervised` e deny-by-default: recursos de alto risco não são ativados implicitamente.
 - Adapters por traits: browser, computer use, MCP, canais, plugins, scheduler e providers podem evoluir sem alterar o contrato do loop; HTTP REST e WebSocket compartilham o núcleo do gateway.
@@ -69,6 +69,14 @@ examples/claw.example.toml (legado)
 a decisão de aprovação à `Policy`; features desligadas permanecem
 `opcional/desabilitado`.
 
+O menu do CMD/PowerShell expõe oito áreas navegáveis. Provider/API permite
+editar protocolo, endpoint, modelo, credencial referenciada por ambiente,
+temperatura, tokens, timeout, retry, streaming, custos, orçamento e circuit
+breaker; canais mostram adapter, transporte, capabilities, dependência e
+estado; controle oferece start/stop/restart, status/doctor, reconfiguração,
+exportação, importação e restore. A WebUI continua opcional e usa o mesmo
+arquivo de configuração.
+
 `BrowserDriver`, `ComputerUseAdapter`, `McpClient` e `SessionStore` são interfaces estáveis. `IDENTITY.md` fornece a identidade base e `PREFERENCES.md` complementa e prevalece em estilo/formato; o contexto é redigido antes de chegar ao provider e é usado pelo chat do CMD e pelo Gateway. Playwright está integrado ao CLI, mas continua desligado por padrão e sujeito à policy de URL, que valida esquema, userinfo, allowlist, DNS, redes privadas e metadata endpoints inclusive na URL final após redirect. Downloads e arquivos de estado de sessão são controlados no workspace e perfis persistentes exigem opt-in explícito e podem ser revogados com comando protegido. O adapter cobre navegação, snapshot, clique/duplo clique, drag-and-drop, preenchimento, hover, teclado, checkboxes, selects, rolagem, diálogos, abas, redimensionamento, upload/download, tracing e salvamento/restauração de estado; execução JavaScript arbitrária não é exposta pelo CLI. O adapter Windows de computer use já captura screenshot e executa sequências JSON com policy, aprovação, cancelamento cooperativo e emergency stop; `computer plan` gera uma sequência JSON validada pelo provider sem executá-la, e o smoke real somente leitura de `computer plan`/`computer auto` cobre plano, execução, screenshots e receipts. Browser Use/Stagehand continuam opcionais até implementação e testes próprios; shell já possui executor restrito ao workspace, deny-list destrutiva/de rede, allowlist configurável, timeout, kill-on-drop, limite de saída e quotas de CPU/memória/processos no Windows via Job Object; em sistemas sem esse mecanismo, as quotas permanecem indisponíveis. Plugins possuem instalação/atualização transacional, rollback e ficam desabilitados até sandbox verificável.
 
 ## 6. Configuração e comandos
@@ -78,6 +86,7 @@ sapiens-agent provider add custom --alias principal --base-url https://host.exam
 sapiens-agent provider use principal
 sapiens-agent provider test principal
 sapiens-agent provider models principal
+sapiens-agent provider remove principal
 sapiens-agent route set complexa principal
 sapiens-agent route fallback principal,backup
 sapiens-agent schedule add --every 1h --task "verificar novidades"
@@ -90,6 +99,9 @@ sapiens-agent mcp health --server nome --yes
 sapiens-agent mcp diagnose --server nome --yes
 sapiens-agent mcp add remoto --url https://mcp.example/mcp --transport http --allow read
 sapiens-agent config show
+sapiens-agent config export .\config.export.toml
+sapiens-agent config import .\config.import.toml
+sapiens-agent config restore
 sapiens-agent identity init
 sapiens-agent identity show
 sapiens-agent chat
@@ -103,7 +115,7 @@ Para providers compatíveis, `base_url` deve ser a raiz da API (por exemplo, ter
 | Verificação | Resultado |
 |---|---|
 | Windows x64 / CPU | Passou; Rust 1.93.1, sem GPU |
-| `cargo test` | Passou: 117 testes (106 unitários de biblioteca, 4 de CLI, 6 acceptance e 1 integração de canais) |
+| `cargo test` | Passou: 121 testes (110 unitários de biblioteca, 4 de CLI, 6 acceptance e 1 integração de canais) |
 | `cargo fmt --check` | Passou |
 | CLI `--help` | Passou |
 | Instalador Windows `-DryRun -SkipBuild` | Passou; não altera PATH nem arquivos |
@@ -115,8 +127,8 @@ Para providers compatíveis, `base_url` deve ser a raiz da API (por exemplo, ter
 | localhost/rede privada | Bloqueio coberto por teste |
 | Processo release em repouso | 7,88 MiB working set observado |
 | CPU do processo release em repouso | 0,016 s observado |
-| Binário release | 4.913.664 bytes (aprox. 4,69 MiB) |
-| SHA-256 do release validado | `5F1723D3DC66253A64197ABE34018AC04F4A35882E41AA3A847C055B8B2E3B01` |
+| Binário release | 5.101.568 bytes (aprox. 4,87 MiB) |
+| SHA-256 do release validado | `BBA1A9F0890A8399BC82E7BFD3392036684F5FEA213FF91D0FC685992AD5D20B` |
 
 ## 8. Limitações e próximos passos
 

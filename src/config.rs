@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[derive(Default)]
 pub struct AppConfig {
     pub initialized: bool,
     pub providers: Vec<ProviderConfig>,
@@ -29,7 +29,35 @@ pub struct AppConfig {
     pub mcp_servers: Vec<McpServerConfig>,
     pub approvals: Vec<ApprovalConfig>,
     pub skills: Vec<String>,
+    pub memory_backend: String,
     pub memory_retention_days: u64,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            providers: Vec::new(),
+            active_provider: None,
+            routes: HashMap::new(),
+            fallback: Vec::new(),
+            security: SecurityConfig::default(),
+            server: ServerConfig::default(),
+            shell: ShellConfig::default(),
+            features: FeaturesConfig::default(),
+            interface: InterfaceConfig::default(),
+            resources: ResourceConfig::default(),
+            audio: AudioConfig::default(),
+            schedules: Vec::new(),
+            scheduler: SchedulerLimits::default(),
+            channels: Vec::new(),
+            mcp_servers: Vec::new(),
+            approvals: Vec::new(),
+            skills: Vec::new(),
+            memory_backend: "jsonl".into(),
+            memory_retention_days: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +118,7 @@ pub struct ProviderConfig {
     pub base_url: String,
     pub api_key_env: String,
     pub model: String,
+    pub temperature: f32,
     pub timeout_secs: u64,
     pub retries: u8,
     pub streaming: bool,
@@ -296,6 +325,7 @@ impl Default for ProviderConfig {
             base_url: String::new(),
             api_key_env: "OPENAI_API_KEY".into(),
             model: String::new(),
+            temperature: 0.7,
             timeout_secs: 60,
             retries: 2,
             streaming: false,
@@ -372,10 +402,143 @@ pub fn load(path: &Path) -> Result<AppConfig> {
     toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))
 }
 pub fn save(path: &Path, config: &AppConfig) -> Result<()> {
+    validate(config)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, toml::to_string_pretty(config)?)?;
+    let serialized = toml::to_string_pretty(config)?;
+    let temp_path = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or_default()
+    ));
+    let result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(serialized.as_bytes())?;
+        file.sync_all()?;
+        if path.exists() {
+            fs::copy(path, path.with_extension("toml.bak"))?;
+        }
+        atomic_replace(&temp_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result?;
+    Ok(())
+}
+
+pub fn validate(config: &AppConfig) -> Result<()> {
+    if !["readonly", "supervised", "trusted"].contains(&config.security.mode.as_str()) {
+        anyhow::bail!("security.mode must be readonly, supervised or trusted");
+    }
+    if !["powershell", "web", "both"].contains(&config.interface.mode.as_str()) {
+        anyhow::bail!("interface.mode must be powershell, web, or both");
+    }
+    if !["economy", "balanced", "performance", "custom"]
+        .contains(&config.resources.profile.as_str())
+    {
+        anyhow::bail!("resources.profile is invalid");
+    }
+    if config.resources.max_gpu_percent == 0
+        || config.resources.max_gpu_percent > 100
+        || config.resources.max_cpu_percent == 0
+        || config.resources.max_cpu_percent > 100
+        || config.resources.max_memory_mb < 256
+        || config.resources.max_concurrent == 0
+    {
+        anyhow::bail!("resource limits are invalid");
+    }
+    if config.memory_backend != "jsonl" {
+        anyhow::bail!("memory_backend available in this release: jsonl");
+    }
+    if config.providers.iter().any(|provider| {
+        provider.alias.trim().is_empty()
+            || provider.timeout_secs == 0
+            || provider.retries > 10
+            || provider.max_input_chars == 0
+            || provider.max_tokens == 0
+            || !provider.temperature.is_finite()
+            || !(0.0..=2.0).contains(&provider.temperature)
+            || !provider.budget_usd.is_finite()
+            || provider.budget_usd < 0.0
+            || !provider.input_cost_per_1k_tokens.is_finite()
+            || provider.input_cost_per_1k_tokens < 0.0
+            || !provider.output_cost_per_1k_tokens.is_finite()
+            || provider.output_cost_per_1k_tokens < 0.0
+            || provider.circuit_breaker_threshold == 0
+            || provider.circuit_breaker_cooldown_secs == 0
+    }) {
+        anyhow::bail!("provider configuration is invalid");
+    }
+    let mut aliases = std::collections::HashSet::new();
+    for provider in &config.providers {
+        if !aliases.insert(&provider.alias) {
+            anyhow::bail!("provider alias is duplicated: {}", provider.alias);
+        }
+    }
+    if let Some(active) = &config.active_provider {
+        find_provider(config, active)?;
+    }
+    for fallback in &config.fallback {
+        find_provider(config, fallback)?;
+    }
+    if config.security.max_requests_per_minute == 0
+        || config.shell.max_output_bytes == 0
+        || config.shell.max_memory_mb == 0
+        || config.shell.max_processes == 0
+        || config.shell.max_cpu_secs == 0
+        || config.scheduler.max_concurrent == 0
+        || config.scheduler.max_depth == 0
+        || config.scheduler.max_tokens == 0
+        || !config.scheduler.max_cost_usd.is_finite()
+        || config.scheduler.max_cost_usd < 0.0
+    {
+        anyhow::bail!("runtime limits are invalid");
+    }
+    if config.audio.max_bytes == 0 || config.audio.max_seconds == 0 {
+        anyhow::bail!("audio limits are invalid");
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(temp_path: &Path, path: &Path) -> Result<()> {
+    fs::rename(temp_path, path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn atomic_replace(temp_path: &Path, path: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let wide = |value: &Path| {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let source = wide(temp_path);
+    let destination = wide(path);
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     Ok(())
 }
 pub fn find_provider<'a>(config: &'a AppConfig, alias: &str) -> Result<&'a ProviderConfig> {
@@ -403,6 +566,7 @@ pub fn get_value(config: &AppConfig, key: &str) -> Result<String> {
         "security.allow_private_networks" => config.security.allow_private_networks.to_string(),
         "security.max_requests_per_minute" => config.security.max_requests_per_minute.to_string(),
         "memory_retention_days" => config.memory_retention_days.to_string(),
+        "memory_backend" => config.memory_backend.clone(),
         "features.browser" => config.features.browser.to_string(),
         "features.computer_use" => config.features.computer_use.to_string(),
         "features.shell" => config.features.shell.to_string(),
@@ -433,6 +597,36 @@ pub fn get_value(config: &AppConfig, key: &str) -> Result<String> {
                 .trim_start_matches("provider.")
                 .trim_end_matches(".model");
             find_provider(config, alias)?.model.clone()
+        }
+        key if key.starts_with("provider.") && key.ends_with(".temperature") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".temperature");
+            find_provider(config, alias)?.temperature.to_string()
+        }
+        key if key.starts_with("provider.") && key.ends_with(".timeout_secs") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".timeout_secs");
+            find_provider(config, alias)?.timeout_secs.to_string()
+        }
+        key if key.starts_with("provider.") && key.ends_with(".retries") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".retries");
+            find_provider(config, alias)?.retries.to_string()
+        }
+        key if key.starts_with("provider.") && key.ends_with(".max_tokens") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".max_tokens");
+            find_provider(config, alias)?.max_tokens.to_string()
+        }
+        key if key.starts_with("provider.") && key.ends_with(".streaming") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".streaming");
+            find_provider(config, alias)?.streaming.to_string()
         }
         key if key.starts_with("provider.") && key.ends_with(".max_input_chars") => {
             let alias = key
@@ -564,6 +758,8 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<()> {
                 .parse::<u64>()
                 .with_context(|| format!("invalid memory retention: {value}"))?;
         }
+        "memory_backend" if value == "jsonl" => config.memory_backend = value.to_string(),
+        "memory_backend" => anyhow::bail!("memory_backend disponível neste release: jsonl"),
         "features.browser" => config.features.browser = parse_bool(value)?,
         "features.computer_use" => config.features.computer_use = parse_bool(value)?,
         "features.shell" => config.features.shell = parse_bool(value)?,
@@ -692,6 +888,86 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<()> {
                 .with_context(|| format!("unknown provider alias: {alias}"))?;
             provider.model = value.to_string();
         }
+        key if key.starts_with("provider.") && key.ends_with(".temperature") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".temperature");
+            let temperature = value
+                .parse::<f32>()
+                .with_context(|| format!("invalid provider temperature: {value}"))?;
+            if !temperature.is_finite() || !(0.0..=2.0).contains(&temperature) {
+                anyhow::bail!("provider temperature must be between 0 and 2");
+            }
+            let provider = config
+                .providers
+                .iter_mut()
+                .find(|p| p.alias == alias)
+                .with_context(|| format!("unknown provider alias: {alias}"))?;
+            provider.temperature = temperature;
+        }
+        key if key.starts_with("provider.") && key.ends_with(".timeout_secs") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".timeout_secs");
+            let timeout = value
+                .parse::<u64>()
+                .with_context(|| format!("invalid provider timeout: {value}"))?;
+            if timeout == 0 {
+                anyhow::bail!("provider timeout must be greater than zero");
+            }
+            let provider = config
+                .providers
+                .iter_mut()
+                .find(|p| p.alias == alias)
+                .with_context(|| format!("unknown provider alias: {alias}"))?;
+            provider.timeout_secs = timeout;
+        }
+        key if key.starts_with("provider.") && key.ends_with(".retries") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".retries");
+            let retries = value
+                .parse::<u8>()
+                .with_context(|| format!("invalid provider retries: {value}"))?;
+            if retries > 10 {
+                anyhow::bail!("provider retries must be between 0 and 10");
+            }
+            let provider = config
+                .providers
+                .iter_mut()
+                .find(|p| p.alias == alias)
+                .with_context(|| format!("unknown provider alias: {alias}"))?;
+            provider.retries = retries;
+        }
+        key if key.starts_with("provider.") && key.ends_with(".streaming") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".streaming");
+            let streaming = parse_bool(value)?;
+            let provider = config
+                .providers
+                .iter_mut()
+                .find(|p| p.alias == alias)
+                .with_context(|| format!("unknown provider alias: {alias}"))?;
+            provider.streaming = streaming;
+        }
+        key if key.starts_with("provider.") && key.ends_with(".max_tokens") => {
+            let alias = key
+                .trim_start_matches("provider.")
+                .trim_end_matches(".max_tokens");
+            let max_tokens = value
+                .parse::<u32>()
+                .with_context(|| format!("invalid provider max tokens: {value}"))?;
+            if max_tokens == 0 {
+                anyhow::bail!("provider max_tokens must be greater than zero");
+            }
+            let provider = config
+                .providers
+                .iter_mut()
+                .find(|p| p.alias == alias)
+                .with_context(|| format!("unknown provider alias: {alias}"))?;
+            provider.max_tokens = max_tokens;
+        }
         key if key.starts_with("provider.") && key.ends_with(".max_input_chars") => {
             let alias = key
                 .trim_start_matches("provider.")
@@ -801,4 +1077,70 @@ fn parse_nonnegative_float(value: &str, label: &str) -> Result<f64> {
         anyhow::bail!("{label} must be a finite non-negative number");
     }
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("sapiens-config-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn save_round_trips_and_keeps_previous_backup() {
+        let root = test_root("atomic");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        let path = root.join("config.toml");
+        let first = AppConfig {
+            initialized: true,
+            active_provider: Some("first".into()),
+            providers: vec![
+                ProviderConfig {
+                    alias: "first".into(),
+                    ..Default::default()
+                },
+                ProviderConfig {
+                    alias: "second".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        save(&path, &first).expect("first save");
+        let mut second = first.clone();
+        second.active_provider = Some("second".into());
+        save(&path, &second).expect("second save");
+        let loaded = load(&path).expect("load");
+        let backup = load(&path.with_extension("toml.bak")).expect("backup");
+        assert_eq!(loaded.active_provider.as_deref(), Some("second"));
+        assert_eq!(backup.active_provider.as_deref(), Some("first"));
+        assert_eq!(loaded.memory_backend, "jsonl");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_advanced_values_are_gettable_and_settable() {
+        let mut config = AppConfig::default();
+        config.providers.push(ProviderConfig {
+            alias: "primary".into(),
+            ..Default::default()
+        });
+        set_value(&mut config, "provider.primary.temperature", "1.2").expect("temperature");
+        set_value(&mut config, "provider.primary.timeout_secs", "90").expect("timeout");
+        set_value(&mut config, "provider.primary.max_tokens", "4096").expect("tokens");
+        assert_eq!(
+            get_value(&config, "provider.primary.temperature").unwrap(),
+            "1.2"
+        );
+        assert_eq!(
+            get_value(&config, "provider.primary.timeout_secs").unwrap(),
+            "90"
+        );
+        assert_eq!(
+            get_value(&config, "provider.primary.max_tokens").unwrap(),
+            "4096"
+        );
+    }
 }

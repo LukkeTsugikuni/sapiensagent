@@ -280,9 +280,11 @@ catalog = [
             ("provider catalog", "Lista familias de providers e protocolos suportados.", "read", "pronto"),
             ("provider add", "Adiciona provider, alias, protocolo, modelo e limites.", "external_write", "pronto"),
             ("provider configure ALIAS", "Completa credencial e parametros pelo terminal.", "external_write", "pronto"),
+            ("provider remove ALIAS", "Remove provider e ajusta ativo/fallback com confirmacao.", "destructive", "pronto"),
             ("provider test ALIAS", "Executa health check e informa latencia/status.", "read", "pronto"),
             ("provider models ALIAS", "Consulta modelos do provider configurado.", "read", "pronto"),
             ("provider use ALIAS", "Seleciona o provider ativo.", "external_write", "pronto"),
+            ("config export/import/restore", "Exporta, importa ou restaura a configuracao com backup.", "external_write", "pronto"),
             ("route set TAREFA ALIAS", "Roteia uma tarefa para um alias.", "external_write", "pronto"),
             ("route fallback ALIASES", "Define a cadeia de fallback.", "external_write", "pronto"),
             ("chat [PROMPT]", "Envia conversa one-shot ou interativa pelo CMD.", "external_write", "pronto"),
@@ -340,7 +342,7 @@ story = [
         styles["CoverBody"],
     ),
     Spacer(1, 8 * mm),
-    p("Versao do runtime: 0.1.0 | Validacao: 119 testes, cargo fmt, cargo clippy e release Windows", styles["CoverSmall"]),
+    p("Versao do runtime: 0.1.0 | Validacao: 121 testes, cargo fmt, cargo clippy e release Windows", styles["CoverSmall"]),
     p("Gateway padrao: 127.0.0.1:8787 | Navegador nao abre automaticamente", styles["CoverSmall"]),
     PageBreak(),
     rich("Como ler este catalogo", styles["Section"]),
@@ -462,8 +464,8 @@ story.extend(
         ),
         rich("Evidencia de release", styles["Section"]),
         p(
-            "O release Windows validado mede 5.052.416 bytes e possui SHA-256 "
-            "36FDC5DAAB1343D1ABA4F804F8BDE0C2563F1F5254B9962FE18A9E55CF174578. "
+            "O release Windows validado mede 5.101.568 bytes e possui SHA-256 "
+            "BBA1A9F0890A8399BC82E7BFD3392036684F5FEA213FF91D0FC685992AD5D20B. "
             "A documentacao detalhada esta em docs/ARCHITECTURE.md e docs/CAPABILITIES.md.",
             styles["Body"],
         ),
