@@ -340,7 +340,7 @@ story = [
         styles["CoverBody"],
     ),
     Spacer(1, 8 * mm),
-    p("Versao do runtime: 0.1.0 | Validacao: 117 testes, cargo fmt, cargo clippy e release Windows", styles["CoverSmall"]),
+    p("Versao do runtime: 0.1.0 | Validacao: 119 testes, cargo fmt, cargo clippy e release Windows", styles["CoverSmall"]),
     p("Gateway padrao: 127.0.0.1:8787 | Navegador nao abre automaticamente", styles["CoverSmall"]),
     PageBreak(),
     rich("Como ler este catalogo", styles["Section"]),
@@ -352,10 +352,12 @@ story = [
     ),
     rich("Atalhos de inicio", styles["Callout"]),
     p("1. sapiens-agent setup", styles["Command"]),
+    p("0. sapiens-agent  (menu interativo)", styles["Command"]),
     p("2. sapiens-agent provider add custom --alias principal --base-url URL --model MODELO", styles["Command"]),
     p("3. sapiens-agent provider use principal", styles["Command"]),
     p("4. sapiens-agent start", styles["Command"]),
     p("5. sapiens-agent chat", styles["Command"]),
+    p("6. sapiens-agent resources status", styles["Command"]),
     Spacer(1, 6 * mm),
     p(
         "Os wrappers sapiens-agent.cmd e sapiens.cmd permitem usar os aliases no CMD sem que o usuario precise chamar "
@@ -427,7 +429,25 @@ story.extend(
     )
 )
 story.extend(
+    section(
+        "Skills, recursos e audio opcional",
+        "Skills sao arquivos reais validaveis; recursos sao governados por perfil e audio so e processado quando o canal e o provider suportam a capacidade.",
+        [
+            ("skills list/validate", "Descobre skills reais e valida SKILL.md.", "read", "pronto"),
+            ("skills suggest", "Identifica acoes repetidas nos receipts.", "read", "pronto"),
+            ("skills create NOME", "Cria candidata versionavel pelo skill-forge.", "external_write", "pronto"),
+            ("skills enable/disable", "Controla escopo e habilitacao de uma skill.", "external_write", "pronto"),
+            ("skills rollback NOME", "Reverte skill gerada com aprovacao.", "destructive", "pronto"),
+            ("resources status", "Mostra perfil e limites de GPU, CPU, memoria e concorrencia.", "read", "pronto"),
+            ("resources profile NOME", "Aplica economy, balanced, performance ou custom.", "external_write", "pronto"),
+            ("channel audio inbound", "Identifica e preserva audio recebido sob limites.", "read", "opcional"),
+            ("provider audio_input/output", "Usa audio somente com capability declarada e adapter validado.", "external_write", "opcional"),
+        ],
+    )
+)
+story.extend(
     [
+        PageBreak(),
         rich("Matriz de capacidades e limites", styles["Section"]),
         p(
             "Pronto: providers chat completions, Responses, Anthropic, Gemini e Ollama; canais Telegram, Discord, Slack, "
@@ -435,15 +455,15 @@ story.extend(
             styles["Body"],
         ),
         p(
-            "Opcional/desabilitado por condicao: Signal depende de signal-cli e conta local; audio/video e embeddings nao "
-            "possuem adapter habilitado; Browser Use/Stagehand e plugins aguardam sandbox; MCP, shell, memoria e browser "
-            "sao opt-in; Linux/macOS aguardam runner nativo.",
+            "Opcional/desabilitado por condicao: Signal depende de signal-cli e conta local; audio/video/transcricao dependem "
+            "de adapters e capabilities do provider; embeddings nao possuem adapter habilitado; Browser Use/Stagehand e plugins "
+            "aguardam sandbox; MCP, shell, memoria e browser sao opt-in; Linux/macOS aguardam runner nativo.",
             styles["Body"],
         ),
         rich("Evidencia de release", styles["Section"]),
         p(
-            "O release Windows validado mede 4.913.664 bytes e possui SHA-256 "
-            "5F1723D3DC66253A64197ABE34018AC04F4A35882E41AA3A847C055B8B2E3B01. "
+            "O release Windows validado mede 5.034.496 bytes e possui SHA-256 "
+            "82ABB1D2EAE5E6F43CE9CF611BE80BBF9A24B9306A16C45640DF8671B9C1D29C. "
             "A documentacao detalhada esta em docs/ARCHITECTURE.md e docs/CAPABILITIES.md.",
             styles["Body"],
         ),

@@ -14,4 +14,5 @@ pub mod providers;
 pub mod scheduler;
 pub mod sessions;
 pub mod shell;
+pub mod skills;
 pub mod tools;

@@ -1,5 +1,6 @@
 target/
 tmp/
+output/playwright/
 .playwright-cli/
 .claw-smoke-*/
 .sapiens-*/

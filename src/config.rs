@@ -20,6 +20,9 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub shell: ShellConfig,
     pub features: FeaturesConfig,
+    pub interface: InterfaceConfig,
+    pub resources: ResourceConfig,
+    pub audio: AudioConfig,
     pub schedules: Vec<ScheduleConfig>,
     pub scheduler: SchedulerLimits,
     pub channels: Vec<ChannelConfig>,
@@ -147,6 +150,69 @@ pub struct FeaturesConfig {
     pub channels: bool,
     pub memory: bool,
     pub scheduler: bool,
+    pub audio: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InterfaceConfig {
+    pub mode: String,
+    pub auto_open_browser: bool,
+}
+
+impl Default for InterfaceConfig {
+    fn default() -> Self {
+        Self {
+            mode: "powershell".into(),
+            auto_open_browser: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResourceConfig {
+    pub profile: String,
+    pub max_gpu_percent: u8,
+    pub max_memory_mb: u32,
+    pub max_cpu_percent: u8,
+    pub max_concurrent: u8,
+}
+
+impl Default for ResourceConfig {
+    fn default() -> Self {
+        Self {
+            profile: "balanced".into(),
+            max_gpu_percent: 70,
+            max_memory_mb: 2048,
+            max_cpu_percent: 80,
+            max_concurrent: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    pub enabled: bool,
+    pub max_bytes: u64,
+    pub max_seconds: u32,
+    pub transcription_provider: String,
+    pub voice_reply: bool,
+    pub retain_files: bool,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_bytes: 25 * 1024 * 1024,
+            max_seconds: 300,
+            transcription_provider: "provider".into(),
+            voice_reply: false,
+            retain_files: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +339,7 @@ impl Default for FeaturesConfig {
             channels: false,
             memory: false,
             scheduler: true,
+            audio: false,
         }
     }
 }
@@ -341,6 +408,20 @@ pub fn get_value(config: &AppConfig, key: &str) -> Result<String> {
         "features.channels" => config.features.channels.to_string(),
         "features.memory" => config.features.memory.to_string(),
         "features.scheduler" => config.features.scheduler.to_string(),
+        "features.audio" => config.features.audio.to_string(),
+        "interface.mode" => config.interface.mode.clone(),
+        "interface.auto_open_browser" => config.interface.auto_open_browser.to_string(),
+        "resources.profile" => config.resources.profile.clone(),
+        "resources.max_gpu_percent" => config.resources.max_gpu_percent.to_string(),
+        "resources.max_memory_mb" => config.resources.max_memory_mb.to_string(),
+        "resources.max_cpu_percent" => config.resources.max_cpu_percent.to_string(),
+        "resources.max_concurrent" => config.resources.max_concurrent.to_string(),
+        "audio.enabled" => config.audio.enabled.to_string(),
+        "audio.max_bytes" => config.audio.max_bytes.to_string(),
+        "audio.max_seconds" => config.audio.max_seconds.to_string(),
+        "audio.transcription_provider" => config.audio.transcription_provider.clone(),
+        "audio.voice_reply" => config.audio.voice_reply.to_string(),
+        "audio.retain_files" => config.audio.retain_files.to_string(),
         "scheduler.max_concurrent" => config.scheduler.max_concurrent.to_string(),
         "scheduler.max_depth" => config.scheduler.max_depth.to_string(),
         "scheduler.max_tokens" => config.scheduler.max_tokens.to_string(),
@@ -477,6 +558,86 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<()> {
         "features.channels" => config.features.channels = parse_bool(value)?,
         "features.memory" => config.features.memory = parse_bool(value)?,
         "features.scheduler" => config.features.scheduler = parse_bool(value)?,
+        "features.audio" => {
+            let enabled = parse_bool(value)?;
+            config.features.audio = enabled;
+            config.audio.enabled = enabled;
+        }
+        "interface.mode" if ["powershell", "web", "both"].contains(&value) => {
+            config.interface.mode = value.to_string()
+        }
+        "interface.mode" => anyhow::bail!("interface.mode must be powershell, web, or both"),
+        "interface.auto_open_browser" => config.interface.auto_open_browser = parse_bool(value)?,
+        "resources.profile"
+            if ["economy", "balanced", "performance", "custom"].contains(&value) =>
+        {
+            config.resources.profile = value.to_string()
+        }
+        "resources.profile" => {
+            anyhow::bail!("resources.profile must be economy, balanced, performance, or custom")
+        }
+        "resources.max_gpu_percent" => {
+            let limit = value
+                .parse::<u8>()
+                .with_context(|| format!("invalid GPU limit: {value}"))?;
+            if limit == 0 || limit > 100 {
+                anyhow::bail!("resources.max_gpu_percent must be between 1 and 100");
+            }
+            config.resources.max_gpu_percent = limit;
+        }
+        "resources.max_memory_mb" => {
+            let limit = value
+                .parse::<u32>()
+                .with_context(|| format!("invalid memory limit: {value}"))?;
+            if !(256..=65_536).contains(&limit) {
+                anyhow::bail!("resources.max_memory_mb must be between 256 and 65536");
+            }
+            config.resources.max_memory_mb = limit;
+        }
+        "resources.max_cpu_percent" => {
+            let limit = value
+                .parse::<u8>()
+                .with_context(|| format!("invalid CPU limit: {value}"))?;
+            if limit == 0 || limit > 100 {
+                anyhow::bail!("resources.max_cpu_percent must be between 1 and 100");
+            }
+            config.resources.max_cpu_percent = limit;
+        }
+        "resources.max_concurrent" => {
+            let limit = value
+                .parse::<u8>()
+                .with_context(|| format!("invalid concurrency: {value}"))?;
+            if limit == 0 || limit > 32 {
+                anyhow::bail!("resources.max_concurrent must be between 1 and 32");
+            }
+            config.resources.max_concurrent = limit;
+        }
+        "audio.enabled" => {
+            let enabled = parse_bool(value)?;
+            config.audio.enabled = enabled;
+            config.features.audio = enabled;
+        }
+        "audio.max_bytes" => {
+            let limit = value
+                .parse::<u64>()
+                .with_context(|| format!("invalid audio size: {value}"))?;
+            if !(1..=100 * 1024 * 1024).contains(&limit) {
+                anyhow::bail!("audio.max_bytes must be between 1 and 104857600");
+            }
+            config.audio.max_bytes = limit;
+        }
+        "audio.max_seconds" => {
+            let limit = value
+                .parse::<u32>()
+                .with_context(|| format!("invalid audio duration: {value}"))?;
+            if !(1..=3600).contains(&limit) {
+                anyhow::bail!("audio.max_seconds must be between 1 and 3600");
+            }
+            config.audio.max_seconds = limit;
+        }
+        "audio.transcription_provider" => config.audio.transcription_provider = value.to_string(),
+        "audio.voice_reply" => config.audio.voice_reply = parse_bool(value)?,
+        "audio.retain_files" => config.audio.retain_files = parse_bool(value)?,
         "scheduler.max_concurrent" => {
             let limit = value
                 .parse::<u8>()

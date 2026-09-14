@@ -150,6 +150,10 @@ enum Commands {
         #[command(subcommand)]
         command: ToolCommands,
     },
+    Resources {
+        #[command(subcommand)]
+        command: ResourceCommands,
+    },
     Approval {
         #[command(subcommand)]
         command: ApprovalCommands,
@@ -339,7 +343,30 @@ enum ChannelCommands {
 #[derive(Subcommand, Debug, Clone)]
 enum SkillsCommands {
     List,
-    Enable { name: String },
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
+    Validate {
+        name: Option<String>,
+    },
+    Create {
+        name: String,
+        #[arg(long, default_value = "Reusable local workflow")]
+        purpose: String,
+    },
+    Suggest,
+    Rollback {
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum ResourceCommands {
+    Status,
+    Profile { name: String },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -649,13 +676,18 @@ async fn main() -> Result<()> {
     match command {
         None => {
             print_banner();
-            if !path.exists() && std::io::stdin().is_terminal() {
-                run_setup(&path, &mut config, &cli, true)?;
-            } else if !path.exists() {
-                initialize(&path, &mut config, cli.workspace.as_deref())?;
+            if std::io::stdin().is_terminal() {
+                if !path.exists() {
+                    run_setup(&path, &mut config, &cli, true)?;
+                }
+                run_interactive_menu(&path, &mut config, &cli).await?;
+            } else {
+                if !path.exists() {
+                    initialize(&path, &mut config, cli.workspace.as_deref())?;
+                }
+                let bind = bind_for(&config, cli.port)?;
+                run_server(config, &path, bind, cli.open_browser && !cli.no_browser).await?;
             }
-            let bind = bind_for(&config, cli.port)?;
-            run_server(config, &path, bind, cli.open_browser && !cli.no_browser).await?;
         }
         Some(Commands::Init) => {
             initialize(&path, &mut config, cli.workspace.as_deref())?;
@@ -750,6 +782,9 @@ async fn main() -> Result<()> {
         Some(Commands::Mcp { command }) => mcp_command(&mut config, &path, command, &cli)?,
         Some(Commands::Plugin { command }) => plugin_command(&config, &path, command, &cli)?,
         Some(Commands::Tools { command }) => tools_command(&config, &path, command, &cli)?,
+        Some(Commands::Resources { command }) => {
+            resources_command(&mut config, &path, command, &cli)?
+        }
         Some(Commands::Receipts) => receipts_command(&path, &cli)?,
         Some(Commands::Approval { command }) => {
             approval_command(&mut config, &path, command, &cli)?
@@ -767,6 +802,57 @@ fn config_path(dir: Option<&Path>) -> Result<PathBuf> {
 
 fn print_banner() {
     println!("{BANNER}");
+}
+
+async fn run_interactive_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    loop {
+        println!();
+        println!("  [1] Configurar o agente");
+        println!("  [2] Iniciar o agente");
+        println!("  [3] Reconfigurar");
+        println!("  [4] Ver status");
+        println!("  [5] Diagnóstico");
+        println!("  [6] Gerenciar skills");
+        println!("  [7] Ajuda");
+        println!("  [0] Sair");
+        print!("  Escolha uma opção: ");
+        std::io::stdout().flush()?;
+        let mut choice = String::new();
+        std::io::stdin().read_line(&mut choice)?;
+        match choice.trim() {
+            "1" => {
+                run_setup(path, config, cli, true)?;
+                println!("  Configuração concluída. Escolha [2] para iniciar.");
+            }
+            "2" => {
+                let bind = bind_for(config, cli.port)?;
+                println!("  Iniciando o gateway no CMD. Use Ctrl+C para parar.");
+                run_server(
+                    config.clone(),
+                    path,
+                    bind,
+                    cli.open_browser && !cli.no_browser,
+                )
+                .await?;
+                println!("  Gateway encerrado.");
+            }
+            "3" => run_setup(path, config, cli, false)?,
+            "4" => print_status(config, path, cli)?,
+            "5" => doctor(config, path, cli)?,
+            "6" => skills_command(config, path, SkillsCommands::List, cli)?,
+            "7" => {
+                let mut command = Cli::command();
+                command.print_help()?;
+                println!();
+            }
+            "0" | "q" | "Q" => {
+                println!("  Sapiens Agent encerrado.");
+                break;
+            }
+            _ => println!("  Opção inválida. Escolha um número do menu."),
+        }
+    }
+    Ok(())
 }
 
 fn initialize(path: &Path, config: &mut AppConfig, workspace: Option<&Path>) -> Result<()> {
@@ -863,6 +949,30 @@ fn run_setup(path: &Path, config: &mut AppConfig, cli: &Cli, first_run: bool) ->
     config.features.shell = ask_bool("Ativar shell agora?", config.features.shell, cli.yes)?;
     config.features.mcp = ask_bool("Ativar MCP agora?", config.features.mcp, cli.yes)?;
     config.features.channels = ask_bool("Ativar canais agora?", config.features.channels, cli.yes)?;
+    config.interface.mode = ask(
+        "Interface de configuração [powershell/web/both]",
+        &config.interface.mode,
+        cli.yes,
+    )?;
+    if !["powershell", "web", "both"].contains(&config.interface.mode.as_str()) {
+        anyhow::bail!("interface deve ser powershell, web ou both");
+    }
+    config.features.audio = ask_bool(
+        "Ativar áudio opcional nos canais?",
+        config.features.audio,
+        cli.yes,
+    )?;
+    config.audio.enabled = config.features.audio;
+    config.resources.profile = ask(
+        "Perfil de recursos [economy/balanced/performance/custom]",
+        &config.resources.profile,
+        cli.yes,
+    )?;
+    if !["economy", "balanced", "performance", "custom"]
+        .contains(&config.resources.profile.as_str())
+    {
+        anyhow::bail!("perfil de recursos inválido");
+    }
     config.initialized = true;
     config::save(path, config)?;
     println!("Configuração salva em {}", path.display());
@@ -3489,7 +3599,7 @@ fn skills_command(
     command: SkillsCommands,
     cli: &Cli,
 ) -> Result<()> {
-    let names = [
+    let builtin_names = [
         "browser",
         "computer-use",
         "shell",
@@ -3497,34 +3607,43 @@ fn skills_command(
         "channels",
         "memory",
         "scheduler",
+        "audio",
     ];
     match command {
         SkillsCommands::List => {
-            let entries: Vec<_> = names
-                .iter()
-                .map(|name| serde_json::json!({"name": name, "enabled": skill_enabled(config, name)}))
-                .collect();
+            let mut entries = sapiens_agent::skills::discover(path, &config.skills)?;
+            for name in builtin_names {
+                if !entries.iter().any(|entry| entry.name == name) {
+                    entries.push(sapiens_agent::skills::SkillDescriptor {
+                        name: name.into(),
+                        description: "Runtime feature skill".into(),
+                        path: PathBuf::new(),
+                        valid: true,
+                        enabled: skill_enabled(config, name),
+                        scope: "runtime".into(),
+                    });
+                }
+            }
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
             } else {
                 for entry in entries {
                     println!(
-                        "{}\t{}",
-                        entry["name"],
-                        if entry["enabled"].as_bool().unwrap_or(false) {
-                            "on"
-                        } else {
-                            "off"
-                        }
+                        "{}\t{}\t{}",
+                        entry.name,
+                        if entry.enabled { "on" } else { "off" },
+                        if entry.valid { "valid" } else { "invalid" }
                     );
                 }
             }
         }
         SkillsCommands::Enable { name } => {
-            if !names.contains(&name.as_str()) {
-                anyhow::bail!("skill desconhecida: {name}");
+            if builtin_names.contains(&name.as_str()) {
+                set_skill(config, &name, true)?;
+            } else {
+                sapiens_agent::skills::validate(path, &name)?;
             }
-            set_skill(config, &name, true)?;
             if !config.skills.contains(&name) {
                 config.skills.push(name.clone());
             }
@@ -3533,6 +3652,146 @@ fn skills_command(
                 cli,
                 "Skill habilitada.",
                 serde_json::json!({"name": name, "enabled": true}),
+            );
+        }
+        SkillsCommands::Disable { name } => {
+            if builtin_names.contains(&name.as_str()) {
+                set_skill(config, &name, false)?;
+            }
+            config.skills.retain(|item| item != &name);
+            config::save(path, config)?;
+            message(
+                cli,
+                "Skill desabilitada.",
+                serde_json::json!({"name": name, "enabled": false}),
+            );
+        }
+        SkillsCommands::Validate { name } => {
+            let descriptors = if let Some(name) = name {
+                vec![sapiens_agent::skills::validate(path, &name)?]
+            } else {
+                sapiens_agent::skills::discover(path, &config.skills)?
+            };
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&descriptors)?);
+            } else {
+                for entry in descriptors {
+                    println!(
+                        "{}\t{}",
+                        entry.name,
+                        if entry.valid { "valid" } else { "invalid" }
+                    );
+                }
+            }
+        }
+        SkillsCommands::Create { name, purpose } => {
+            let descriptor = sapiens_agent::skills::create_candidate(path, &name, &purpose)?;
+            message(
+                cli,
+                "Skill candidata criada; revise e valide antes de habilitar.",
+                serde_json::to_value(descriptor)?,
+            );
+        }
+        SkillsCommands::Suggest => {
+            let suggestions = sapiens_agent::skills::suggestions(path)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&suggestions)?);
+            } else if suggestions.is_empty() {
+                println!("Nenhuma repetição suficiente para sugerir uma skill.");
+            } else {
+                for item in suggestions {
+                    println!(
+                        "{}\t{} ocorrências",
+                        item["action"].as_str().unwrap_or("unknown"),
+                        item["occurrences"].as_u64().unwrap_or_default()
+                    );
+                }
+            }
+        }
+        SkillsCommands::Rollback { name } => {
+            if !cli.yes {
+                anyhow::bail!("rollback é destrutivo; repita com --yes após revisar a skill");
+            }
+            let directory = sapiens_agent::skills::root(path).join(&name);
+            let manifest = directory.join("manifest.json");
+            let generated = std::fs::read_to_string(&manifest)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|value| value.get("generated_by").cloned())
+                .and_then(|value| value.as_str().map(str::to_string))
+                .is_some_and(|value| value == "skill-forge");
+            if !generated {
+                anyhow::bail!("rollback só pode remover skills geradas pelo skill-forge");
+            }
+            std::fs::remove_dir_all(&directory)?;
+            config.skills.retain(|item| item != &name);
+            config::save(path, config)?;
+            message(
+                cli,
+                "Skill gerada revertida.",
+                serde_json::json!({"name": name, "removed": true}),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn resources_command(
+    config: &mut AppConfig,
+    path: &Path,
+    command: ResourceCommands,
+    cli: &Cli,
+) -> Result<()> {
+    match command {
+        ResourceCommands::Status => {
+            let gpu_backend =
+                std::env::var("SAPIENS_GPU_BACKEND").unwrap_or_else(|_| "auto".into());
+            let status = serde_json::json!({
+                "profile": config.resources.profile,
+                "max_gpu_percent": config.resources.max_gpu_percent,
+                "max_memory_mb": config.resources.max_memory_mb,
+                "max_cpu_percent": config.resources.max_cpu_percent,
+                "max_concurrent": config.resources.max_concurrent,
+                "gpu_backend": gpu_backend,
+                "policy": "bounded; fallback to CPU is allowed",
+            });
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!("Perfil: {}", status["profile"]);
+                println!(
+                    "GPU: {}% (backend {})",
+                    status["max_gpu_percent"], status["gpu_backend"]
+                );
+                println!(
+                    "CPU: {}% | Memória: {} MB | Concorrência: {}",
+                    status["max_cpu_percent"], status["max_memory_mb"], status["max_concurrent"]
+                );
+            }
+        }
+        ResourceCommands::Profile { name } => {
+            let (gpu, memory, cpu, concurrent) = match name.as_str() {
+                "economy" => (35, 1024, 50, 1),
+                "balanced" => (70, 2048, 80, 2),
+                "performance" => (95, 8192, 100, 4),
+                "custom" => (
+                    config.resources.max_gpu_percent,
+                    config.resources.max_memory_mb,
+                    config.resources.max_cpu_percent,
+                    config.resources.max_concurrent,
+                ),
+                _ => anyhow::bail!("perfil deve ser economy, balanced, performance ou custom"),
+            };
+            config.resources.profile = name.clone();
+            config.resources.max_gpu_percent = gpu;
+            config.resources.max_memory_mb = memory;
+            config.resources.max_cpu_percent = cpu;
+            config.resources.max_concurrent = concurrent;
+            config::save(path, config)?;
+            message(
+                cli,
+                "Perfil de recursos salvo.",
+                serde_json::json!({"profile": name}),
             );
         }
     }

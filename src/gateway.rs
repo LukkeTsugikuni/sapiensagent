@@ -37,6 +37,7 @@ struct AppState {
     memory: Arc<Mutex<MemoryStore>>,
     sessions: Arc<Mutex<FileSessionStore>>,
     memory_enabled: bool,
+    audio_enabled: bool,
     identity_context: Option<String>,
     workspace: PathBuf,
     config_path: PathBuf,
@@ -91,6 +92,7 @@ pub async fn serve(config: AppConfig, bind: String, config_path: PathBuf) -> any
     )?;
     let sessions = FileSessionStore::open(data_dir.join("sessions.json"))?;
     let memory_enabled = config.features.memory;
+    let audio_enabled = config.features.audio && config.audio.enabled;
     let identity_context = crate::identity::effective_prompt(&data_dir)?;
     let workspace = config.security.workspace.clone();
     let max_requests_per_minute = config.security.max_requests_per_minute.max(1);
@@ -132,6 +134,7 @@ pub async fn serve(config: AppConfig, bind: String, config_path: PathBuf) -> any
         memory: Arc::new(Mutex::new(memory)),
         sessions: Arc::new(Mutex::new(sessions)),
         memory_enabled,
+        audio_enabled,
         identity_context,
         workspace,
         config_path: config_path.clone(),
@@ -154,6 +157,9 @@ pub async fn serve(config: AppConfig, bind: String, config_path: PathBuf) -> any
         .route("/health", get(health))
         .route("/favicon.ico", get(favicon))
         .route("/", get(index))
+        .route("/v1/status", get(api_status))
+        .route("/v1/config", get(api_config).post(api_config_update))
+        .route("/v1/skills", get(api_skills))
         .route("/v1/chat", post(chat))
         .route("/v1/ws", get(websocket))
         .route("/v1/webhooks/{channel}", get(webhook_verify).post(webhook))
@@ -226,6 +232,26 @@ async fn matrix_sync_worker(state: AppState, channel: crate::channels::ChannelCo
                             false,
                             &format!(
                                 "event={} room={} sender=not-allowlisted",
+                                message.event_id, message.room_id
+                            ),
+                            Some(&message.room_id),
+                        );
+                        continue;
+                    }
+                    if !state.audio_enabled
+                        && (message.msgtype == "m.audio"
+                            || message
+                                .mime_type
+                                .as_deref()
+                                .is_some_and(|mime| mime.starts_with("audio/")))
+                    {
+                        let _ = crate::observability::append_receipt(
+                            &state.config_path,
+                            "channel.matrix.audio",
+                            "read",
+                            false,
+                            &format!(
+                                "event={} room={} audio=disabled",
                                 message.event_id, message.room_id
                             ),
                             Some(&message.room_id),
@@ -471,6 +497,22 @@ async fn signal_receive_worker(state: AppState, channel: crate::channels::Channe
                         .unwrap_or(25 * 1024 * 1024)
                         .min(50 * 1024 * 1024);
                     for attachment in &message.attachment_details {
+                        if !state.audio_enabled
+                            && attachment
+                                .content_type
+                                .as_deref()
+                                .is_some_and(|mime| mime.starts_with("audio/"))
+                        {
+                            let _ = crate::observability::append_receipt(
+                                &state.config_path,
+                                "channel.signal.audio",
+                                "read",
+                                false,
+                                &format!("attachment={} audio=disabled", attachment.id),
+                                Some(&message.sender),
+                            );
+                            continue;
+                        }
                         let output_dir = state
                             .workspace
                             .join("signal-media")
@@ -688,8 +730,104 @@ async fn favicon() -> StatusCode {
 
 async fn index() -> Html<&'static str> {
     Html(
-        r#"<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Sapiens Agent</title><style>:root{color-scheme:dark;--bg:#0b1020;--panel:#121a2d;--line:#263653;--text:#e8eefc;--muted:#92a4c6;--accent:#6ea8fe}*{box-sizing:border-box}body{font:16px system-ui,-apple-system,Segoe UI,sans-serif;background:radial-gradient(circle at top,#172542,var(--bg) 55%);color:var(--text);max-width:820px;margin:0 auto;padding:48px 20px}main{background:rgba(18,26,45,.9);border:1px solid var(--line);border-radius:18px;padding:28px;box-shadow:0 20px 60px #0006}h1{margin:0 0 6px;letter-spacing:.04em}p{color:var(--muted);margin-top:0}textarea{display:block;width:100%;min-height:150px;resize:vertical;background:#0b1222;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:14px;font:inherit;margin:22px 0 12px}button{background:var(--accent);color:#08101f;border:0;border-radius:9px;padding:10px 18px;font-weight:700;cursor:pointer}button:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;background:#0b1222;border:1px solid var(--line);border-radius:10px;padding:14px;min-height:52px;color:#cfe0ff}</style><main><h1>Sapiens Agent</h1><p>Gateway local • modo seguro • pronto para conversar</p><textarea id=m aria-label="Mensagem" placeholder="Digite uma mensagem..."></textarea><button id=b onclick=send()>Enviar</button><pre id=o aria-live=polite></pre><script>async function send(){let m=document.getElementById('m').value.trim(),b=document.getElementById('b'),o=document.getElementById('o');if(!m){o.textContent='Digite uma mensagem.';return}b.disabled=true;o.textContent='Processando...';try{let r=await fetch('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:m})}),data=await r.json();o.textContent=data.answer||data.error||JSON.stringify(data,null,2)}catch(e){o.textContent='Falha de conexão com o gateway.'}finally{b.disabled=false}}</script></main>"#,
+        r###"<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sapiens Agent</title>
+<style>
+:root{color-scheme:dark;--bg:#080d1c;--panel:#111a2e;--panel2:#17233d;--line:#2a3b61;--text:#eef4ff;--muted:#91a5c9;--accent:#55b8ff;--good:#43d6aa;--warn:#f0b35b;--bad:#ff7184}
+*{box-sizing:border-box}body{margin:0;font:15px Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:radial-gradient(circle at 15% 0,#1b3158 0,var(--bg) 44%);color:var(--text)}
+.shell{display:grid;grid-template-columns:240px 1fr;min-height:100vh}.rail{padding:28px 18px;border-right:1px solid var(--line);background:#0a1124cc}.brand{display:flex;gap:10px;align-items:center;margin-bottom:32px}.mark{width:34px;height:34px;border:2px solid var(--accent);border-radius:10px;display:grid;place-items:center;color:var(--accent);font-weight:800}.brand strong{letter-spacing:.08em}.brand small{display:block;color:var(--muted);margin-top:3px}.nav{display:grid;gap:8px}.nav button{background:transparent;color:var(--muted);text-align:left;border:1px solid transparent;padding:11px 12px;border-radius:9px;cursor:pointer}.nav button.active,.nav button:hover{background:var(--panel2);border-color:var(--line);color:var(--text)}.content{padding:34px clamp(20px,4vw,58px);max-width:1250px;width:100%}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:26px}.eyebrow{color:var(--accent);font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:11px}.top h1{margin:7px 0 5px;font-size:31px}.muted{color:var(--muted)}.pill{border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--good);white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.card{background:linear-gradient(145deg,#15213aee,#0d1629ee);border:1px solid var(--line);border-radius:15px;padding:18px;box-shadow:0 18px 45px #0002}.metric{font-size:25px;font-weight:750;margin-top:8px}.label{color:var(--muted);font-size:12px}.section{margin-top:18px}.section h2{font-size:17px;margin:0 0 11px}.two{display:grid;grid-template-columns:1.3fr .7fr;gap:14px}.rows{display:grid;gap:9px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #233452}.row:last-child{border-bottom:0}.tag{font-size:11px;border-radius:999px;padding:4px 8px;border:1px solid var(--line)}.on{color:var(--good)}.off{color:var(--warn)}textarea,input,select{width:100%;background:#091224;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:11px;font:inherit}textarea{min-height:130px;resize:vertical}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:11px}button.primary{background:var(--accent);color:#06101e;border:0;border-radius:9px;padding:10px 15px;font-weight:750;cursor:pointer}button.secondary{background:transparent;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 15px;cursor:pointer}.result{white-space:pre-wrap;min-height:45px;color:#cfe0ff;background:#091224;border:1px solid var(--line);border-radius:9px;padding:12px;margin-top:12px}.hide{display:none}.skill{display:flex;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid #233452}.skill:last-child{border:0}@media(max-width:900px){.shell{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid var(--line);padding:15px}.brand{margin-bottom:14px}.nav{display:flex;overflow:auto}.content{padding:24px 16px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}@media(max-width:520px){.grid{grid-template-columns:1fr}.top{display:block}.pill{display:inline-block;margin-top:14px}}
+</style></head>
+<body><div class="shell"><aside class="rail"><div class="brand"><div class="mark">S</div><div><strong>SAPIENS</strong><small>AGENT CONTROL</small></div></div><nav class="nav"><button class="active" data-tab="overview">Visão geral</button><button data-tab="configure">Configuração</button><button data-tab="channels">Canais e mídia</button><button data-tab="skills">Skills</button><button data-tab="chat">Chat</button></nav></aside>
+<main class="content"><header class="top"><div><div class="eyebrow">Local-first / supervised</div><h1 id="title">Visão geral</h1><div class="muted">Controle o agente sem sair do seu computador.</div></div><div class="pill" id="health">● verificando gateway</div></header>
+<section id="overview" class="tab"><div class="grid"><div class="card"><div class="label">Gateway</div><div class="metric" id="gateway">--</div><div class="muted">processo local</div></div><div class="card"><div class="label">Providers</div><div class="metric" id="providers">--</div><div class="muted">configurados</div></div><div class="card"><div class="label">Canais</div><div class="metric" id="channels">--</div><div class="muted">habilitados</div></div><div class="card"><div class="label">Skills</div><div class="metric" id="skills">--</div><div class="muted">válidas</div></div></div><div class="two section"><div class="card"><h2>Capacidades</h2><div class="rows" id="capabilities"></div></div><div class="card"><h2>Recursos</h2><div class="rows" id="resources"></div></div></div></section>
+<section id="configure" class="tab hide"><div class="card"><h2>Configuração rápida</h2><p class="muted">As alterações usam a mesma configuração do PowerShell e exigem validação.</p><div class="rows"><label>Interface<select id="interfaceMode"><option>powershell</option><option>web</option><option>both</option></select></label><label>Perfil de recursos<select id="resourceProfile"><option>economy</option><option>balanced</option><option>performance</option><option>custom</option></select></label><label><input type="checkbox" id="audioEnabled"> habilitar áudio opcional nos canais</label></div><div class="actions"><button class="primary" onclick="saveConfig()">Salvar configuração</button><button class="secondary" onclick="refresh()">Recarregar</button></div><div class="result" id="configResult" aria-live="polite"></div></div></section>
+<section id="channels" class="tab hide"><div class="two"><div class="card"><h2>Canais registrados</h2><div id="channelList" class="rows"></div></div><div class="card"><h2>Áudio multimodal</h2><p class="muted">Receba áudio por canais compatíveis, transcreva com provider configurado e responda em texto ou voz quando houver suporte. O microfone local não fica sempre ativo.</p><div class="tag off">opt-in / capability-driven</div><div class="result">Limites e provider são controlados pelo CLI em audio.*.</div></div></div></section>
+<section id="skills" class="tab hide"><div class="card"><h2>Skills carregadas</h2><p class="muted">Skills reais possuem SKILL.md, validação e escopo. O skill-forge cria candidatas a partir de repetições.</p><div id="skillList" class="rows"></div></div></section>
+<section id="chat" class="tab hide"><div class="card"><h2>Chat local</h2><p class="muted">Converse pelo gateway sem iniciar outra janela.</p><textarea id="message" placeholder="Digite uma mensagem..."></textarea><div class="actions"><button class="primary" id="send" onclick="sendChat()">Enviar</button></div><div class="result" id="answer" aria-live="polite"></div></div></section>
+</main></div>
+<script>
+const $=id=>document.getElementById(id);let config={};
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.add('hide'));$(b.dataset.tab).classList.remove('hide');document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('title').textContent=b.textContent});
+async function api(url,options){let r=await fetch(url,options);let data=await r.json();if(!r.ok)throw Error(data.error||'falha de API');return data}
+function row(name,value,good=true){return '<div class="row"><span>'+name+'</span><span class="tag '+(good?'on':'off')+'">'+value+'</span></div>'}
+async function refresh(){try{let [s,c,k]=await Promise.all([api('/v1/status'),api('/v1/config'),api('/v1/skills')]);config=c;$('health').textContent='● gateway saudável';$('health').className='pill';$('gateway').textContent=s.gateway;$('providers').textContent=s.providers.length;$('channels').textContent=s.channels.filter(x=>x.enabled).length;$('skills').textContent=k.filter(x=>x.valid).length;$('capabilities').innerHTML=Object.entries(s.features).map(([n,v])=>row(n,v?'pronto':'desligado',v)).join('');$('resources').innerHTML=[row('perfil',s.resources.profile),row('GPU máxima',s.resources.max_gpu_percent+'%'),row('memória',s.resources.max_memory_mb+' MB'),row('CPU máxima',s.resources.max_cpu_percent+'%')].join('');$('interfaceMode').value=c.interface.mode;$('resourceProfile').value=c.resources.profile;$('audioEnabled').checked=c.audio.enabled;$('channelList').innerHTML=s.channels.map(x=>row(x.label,x.enabled?'habilitado':'opcional',x.enabled)).join('')||'<span class="muted">Nenhum canal configurado.</span>';$('skillList').innerHTML=k.map(x=>'<div class="skill"><span><strong>'+x.name+'</strong><br><span class="muted">'+(x.description||'sem descrição')+'</span></span><span class="tag '+(x.valid?'on':'off')+'">'+(x.valid?'válida':'revisar')+'</span></div>').join('')||'<span class="muted">Nenhuma skill encontrada.</span>'}catch(e){$('health').textContent='● gateway indisponível';$('health').style.color='var(--bad)';$('configResult').textContent=e.message}}
+async function saveConfig(){let out=$('configResult');try{for(let [key,value] of [['interface.mode',$('interfaceMode').value],['resources.profile',$('resourceProfile').value],['features.audio',$('audioEnabled').checked?'true':'false']])await api('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key,value})});out.textContent='Configuração salva com validação.';await refresh()}catch(e){out.textContent=e.message}}
+async function sendChat(){let text=$('message').value.trim();if(!text){$('answer').textContent='Digite uma mensagem.';return}let b=$('send');b.disabled=true;$('answer').textContent='Processando...';try{let d=await api('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text})});$('answer').textContent=d.answer||JSON.stringify(d,null,2)}catch(e){$('answer').textContent=e.message}finally{b.disabled=false}}
+refresh();
+</script></body></html>"###,
     )
+}
+
+async fn api_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    let skills =
+        crate::skills::discover(&state.config_path, &config.skills).map_err(internal_error)?;
+    Ok(Json(serde_json::json!({
+        "gateway": "online",
+        "features": config.features,
+        "resources": config.resources,
+        "audio": config.audio,
+        "providers": config.providers.iter().map(|p| serde_json::json!({"alias": p.alias, "kind": p.kind, "protocol": p.protocol, "capabilities": p.capabilities})).collect::<Vec<_>>(),
+        "channels": config.channels.iter().map(|c| serde_json::json!({"name": c.name, "kind": c.kind, "enabled": c.enabled})).collect::<Vec<_>>(),
+        "skills_valid": skills.iter().filter(|skill| skill.valid).count(),
+    })))
+}
+
+async fn api_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    Ok(Json(
+        serde_json::to_value(config).map_err(|error| internal_error(error.into()))?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigUpdate {
+    key: String,
+    value: String,
+}
+
+async fn api_config_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(update): Json<ConfigUpdate>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let mut config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    crate::config::set_value(&mut config, &update.key, &update.value).map_err(internal_error)?;
+    crate::config::save(&state.config_path, &config).map_err(internal_error)?;
+    let _ = crate::observability::append_receipt(
+        &state.config_path,
+        "config.web_update",
+        "external_write",
+        true,
+        &format!("key={}", update.key),
+        None,
+    );
+    Ok(Json(serde_json::json!({"saved": true, "key": update.key})))
+}
+
+async fn api_skills(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    let skills =
+        crate::skills::discover(&state.config_path, &config.skills).map_err(internal_error)?;
+    Ok(Json(
+        serde_json::to_value(skills).map_err(|error| internal_error(error.into()))?,
+    ))
 }
 
 async fn chat(
@@ -1282,6 +1420,24 @@ async fn process_whatsapp_webhook(
                 "WhatsApp sender is not allowlisted".into(),
             ));
         }
+        if !state.audio_enabled && inbound.kind == "audio" {
+            let _ = crate::observability::append_receipt(
+                &state.config_path,
+                "channel.whatsapp.audio",
+                "read",
+                false,
+                &format!("id={} audio=disabled", inbound.id),
+                Some(&inbound.sender),
+            );
+            responses.push(serde_json::json!({
+                "id": inbound.id,
+                "timestamp": inbound.timestamp,
+                "event": "media",
+                "status": "ignored",
+                "reason": "audio disabled",
+            }));
+            continue;
+        }
         let mut attachments = Vec::new();
         let message = if inbound.kind == "text" {
             inbound.text.clone().unwrap_or_default()
@@ -1662,6 +1818,7 @@ mod tests {
                     FileSessionStore::open(root.join("sessions.json")).expect("sessions"),
                 )),
                 memory_enabled: false,
+                audio_enabled: false,
                 identity_context: None,
                 workspace: root.clone(),
                 config_path,
@@ -1711,6 +1868,7 @@ mod tests {
                 )),
                 sessions: Arc::new(Mutex::new(sessions)),
                 memory_enabled: false,
+                audio_enabled: false,
                 identity_context: None,
                 workspace: root.clone(),
                 config_path: root.join("config.toml"),
