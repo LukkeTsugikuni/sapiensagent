@@ -2115,14 +2115,21 @@ fn run_setup(
             cli.yes,
             force_interactive,
         )?;
-        config.providers.retain(|provider| provider.alias != alias);
-        config.providers.push(ProviderConfig {
-            alias: alias.clone(),
-            base_url,
-            model,
-            api_key_env,
-            ..Default::default()
-        });
+        if let Some(provider) = config.providers.iter_mut().find(|p| p.alias == alias) {
+            provider.kind = "custom".into();
+            provider.protocol = "chat_completions".into();
+            provider.base_url = base_url;
+            provider.model = model;
+            provider.api_key_env = api_key_env;
+        } else {
+            config.providers.push(ProviderConfig {
+                alias: alias.clone(),
+                base_url,
+                model,
+                api_key_env,
+                ..Default::default()
+            });
+        }
         config.active_provider = Some(alias);
     }
 
