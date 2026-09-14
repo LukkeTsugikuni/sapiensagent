@@ -1,0 +1,23 @@
+active_provider = "principal"
+fallback = ["backup"]
+
+[[providers]]
+alias = "principal"
+kind = "custom"
+protocol = "chat_completions"
+base_url = "https://host.example/v1"
+api_key_env = "CLAW_API_KEY"
+model = "modelo"
+timeout_secs = 60
+max_tokens = 2048
+capabilities = ["tool_calling"]
+
+[security]
+mode = "supervised"
+workspace = "."
+allowed_domains = []
+allow_private_networks = false
+
+[server]
+bind = "127.0.0.1:8787"
+

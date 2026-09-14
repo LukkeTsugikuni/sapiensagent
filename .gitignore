@@ -1,0 +1,5 @@
+target/
+tmp/
+.playwright-cli/
+.claw-smoke-*/
+.sapiens-*/
