@@ -678,7 +678,7 @@ async fn main() -> Result<()> {
             print_banner();
             if std::io::stdin().is_terminal() {
                 if !path.exists() {
-                    run_setup(&path, &mut config, &cli, true)?;
+                    run_setup(&path, &mut config, &cli, true, false)?;
                 }
                 run_interactive_menu(&path, &mut config, &cli).await?;
             } else {
@@ -699,11 +699,11 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Setup) => {
             print_banner();
-            run_setup(&path, &mut config, &cli, true)?;
+            run_setup(&path, &mut config, &cli, true, false)?;
         }
-        Some(Commands::Configure) => run_setup(&path, &mut config, &cli, false)?,
+        Some(Commands::Configure) => run_setup(&path, &mut config, &cli, false, false)?,
         Some(Commands::Config { command }) => match command {
-            None => run_setup(&path, &mut config, &cli, false)?,
+            None => run_setup(&path, &mut config, &cli, false, false)?,
             Some(ConfigCommands::Show) => print_redacted(&config)?,
             Some(ConfigCommands::Get { key }) => {
                 let value = config::get_value(&config, &key)?;
@@ -821,7 +821,7 @@ async fn run_interactive_menu(path: &Path, config: &mut AppConfig, cli: &Cli) ->
         std::io::stdin().read_line(&mut choice)?;
         match choice.trim() {
             "1" => {
-                run_setup(path, config, cli, true)?;
+                run_setup(path, config, cli, true, true)?;
                 println!("  Configuração concluída. Escolha [2] para iniciar.");
             }
             "2" => {
@@ -836,7 +836,7 @@ async fn run_interactive_menu(path: &Path, config: &mut AppConfig, cli: &Cli) ->
                 .await?;
                 println!("  Gateway encerrado.");
             }
-            "3" => run_setup(path, config, cli, false)?,
+            "3" => run_setup(path, config, cli, false, true)?,
             "4" => print_status(config, path, cli)?,
             "5" => doctor(config, path, cli)?,
             "6" => skills_command(config, path, SkillsCommands::List, cli)?,
@@ -887,7 +887,13 @@ fn ensure_initialized(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<
     Ok(())
 }
 
-fn run_setup(path: &Path, config: &mut AppConfig, cli: &Cli, first_run: bool) -> Result<()> {
+fn run_setup(
+    path: &Path,
+    config: &mut AppConfig,
+    cli: &Cli,
+    first_run: bool,
+    force_interactive: bool,
+) -> Result<()> {
     initialize(path, config, cli.workspace.as_deref())?;
     println!(
         "{}",
@@ -898,14 +904,15 @@ fn run_setup(path: &Path, config: &mut AppConfig, cli: &Cli, first_run: bool) ->
         }
     );
     let workspace_default = config.security.workspace.display().to_string();
-    let workspace = ask("Workspace", &workspace_default, cli.yes)?;
+    let workspace = setup_ask("Workspace", &workspace_default, cli.yes, force_interactive)?;
     config.security.workspace = PathBuf::from(workspace);
     std::fs::create_dir_all(&config.security.workspace)?;
 
-    let alias = ask(
+    let alias = setup_ask(
         "Alias do provider (vazio para configurar depois)",
         config.active_provider.as_deref().unwrap_or("principal"),
         cli.yes,
+        force_interactive,
     )?;
     if !alias.is_empty() {
         let existing = config.providers.iter().find(|p| p.alias == alias);
@@ -914,16 +921,18 @@ fn run_setup(path: &Path, config: &mut AppConfig, cli: &Cli, first_run: bool) ->
         let key_default = existing
             .map(|p| p.api_key_env.as_str())
             .unwrap_or("SAPIENS_API_KEY");
-        let base_url = ask(
+        let base_url = setup_ask(
             "URL base OpenAI-compatible (vazio para configurar depois)",
             base_default,
             cli.yes,
+            force_interactive,
         )?;
-        let model = ask("Nome do modelo", model_default, cli.yes)?;
-        let api_key_env = ask(
+        let model = setup_ask("Nome do modelo", model_default, cli.yes, force_interactive)?;
+        let api_key_env = setup_ask(
             "Nome da variável da chave (nunca a chave)",
             key_default,
             cli.yes,
+            force_interactive,
         )?;
         if let Some(provider) = config.providers.iter_mut().find(|p| p.alias == alias) {
             provider.base_url = base_url;
@@ -940,33 +949,57 @@ fn run_setup(path: &Path, config: &mut AppConfig, cli: &Cli, first_run: bool) ->
         }
         config.active_provider = Some(alias);
     }
-    config.security.mode = ask(
+    config.security.mode = setup_ask(
         "Modo de segurança [readonly/supervised/trusted]",
         &config.security.mode,
         cli.yes,
+        force_interactive,
     )?;
-    config.features.browser = ask_bool("Ativar browser agora?", config.features.browser, cli.yes)?;
-    config.features.shell = ask_bool("Ativar shell agora?", config.features.shell, cli.yes)?;
-    config.features.mcp = ask_bool("Ativar MCP agora?", config.features.mcp, cli.yes)?;
-    config.features.channels = ask_bool("Ativar canais agora?", config.features.channels, cli.yes)?;
-    config.interface.mode = ask(
+    config.features.browser = setup_ask_bool(
+        "Ativar browser agora?",
+        config.features.browser,
+        cli.yes,
+        force_interactive,
+    )?;
+    config.features.shell = setup_ask_bool(
+        "Ativar shell agora?",
+        config.features.shell,
+        cli.yes,
+        force_interactive,
+    )?;
+    config.features.mcp = setup_ask_bool(
+        "Ativar MCP agora?",
+        config.features.mcp,
+        cli.yes,
+        force_interactive,
+    )?;
+    config.features.channels = setup_ask_bool(
+        "Ativar canais agora?",
+        config.features.channels,
+        cli.yes,
+        force_interactive,
+    )?;
+    config.interface.mode = setup_ask(
         "Interface de configuração [powershell/web/both]",
         &config.interface.mode,
         cli.yes,
+        force_interactive,
     )?;
     if !["powershell", "web", "both"].contains(&config.interface.mode.as_str()) {
         anyhow::bail!("interface deve ser powershell, web ou both");
     }
-    config.features.audio = ask_bool(
+    config.features.audio = setup_ask_bool(
         "Ativar áudio opcional nos canais?",
         config.features.audio,
         cli.yes,
+        force_interactive,
     )?;
     config.audio.enabled = config.features.audio;
-    config.resources.profile = ask(
+    config.resources.profile = setup_ask(
         "Perfil de recursos [economy/balanced/performance/custom]",
         &config.resources.profile,
         cli.yes,
+        force_interactive,
     )?;
     if !["economy", "balanced", "performance", "custom"]
         .contains(&config.resources.profile.as_str())
@@ -977,6 +1010,47 @@ fn run_setup(path: &Path, config: &mut AppConfig, cli: &Cli, first_run: bool) ->
     config::save(path, config)?;
     println!("Configuração salva em {}", path.display());
     Ok(())
+}
+
+fn setup_ask(
+    label: &str,
+    default: &str,
+    automatic: bool,
+    force_interactive: bool,
+) -> Result<String> {
+    if force_interactive {
+        return ask_prompt(label, default);
+    }
+    ask(label, default, automatic)
+}
+
+fn setup_ask_bool(
+    label: &str,
+    default: bool,
+    automatic: bool,
+    force_interactive: bool,
+) -> Result<bool> {
+    if force_interactive {
+        let value = ask_prompt(label, if default { "S/n" } else { "s/N" })?;
+        return Ok(matches!(
+            value.to_ascii_lowercase().as_str(),
+            "s" | "sim" | "y" | "yes"
+        ));
+    }
+    ask_bool(label, default, automatic)
+}
+
+fn ask_prompt(label: &str, default: &str) -> Result<String> {
+    print!("{label} [{default}]: ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+    Ok(if input.is_empty() {
+        default.to_string()
+    } else {
+        input.to_string()
+    })
 }
 
 fn ask(label: &str, default: &str, automatic: bool) -> Result<String> {
