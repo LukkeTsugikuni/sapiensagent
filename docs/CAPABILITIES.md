@@ -9,7 +9,7 @@ marcado como `opcional/desabilitado` não é anunciado como suporte pronto.
 | Início no CMD (`sapiens`/`sapiens-agent`) | pronto | Banner `S A P I E N S AGENT`, wrappers sem `.exe` no comando do usuário, sem abertura automática de navegador |
 | Gateway local REST/WebSocket/Webhooks | pronto | `/health` respondeu `200 ok`; sessões, rate limit, autenticação opcional e emergency stop |
 | CLI/WebUI | pronto | CLI é o caminho principal; WebUI local opcional e `--open-browser` explícito |
-| CLI/WebUI | pronto | Menu PowerShell/CMD em 8 áreas é o caminho principal; WebUI local com dashboard e configuração opcional, `--open-browser` explícito; ambas usam a mesma configuração |
+| CLI/WebUI | pronto | Menu PowerShell/CMD em 8 áreas, catálogo numerado com defaults e modo `Personalizado/Avançado`; WebUI local opcional, `--open-browser` explícito; ambas usam a mesma configuração |
 | Providers chat completions, Responses, Anthropic, Gemini e Ollama | pronto | Adapters reais, health/modelos, retry/fallback, limites, uso/custo e testes de sucesso/falha |
 | Imagens multimodais | pronto para providers compatíveis | CLI, REST/WebSocket, Matrix, Signal e WhatsApp; payloads nativos e limites testados |
 | Áudio e vídeo multimodal | opcional/desabilitado | Sem adapter e testes próprios no runtime atual |

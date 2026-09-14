@@ -77,6 +77,12 @@ estado; controle oferece start/stop/restart, status/doctor, reconfiguração,
 exportação, importação e restore. A WebUI continua opcional e usa o mesmo
 arquivo de configuração.
 
+O primeiro fluxo e as operações comuns usam catálogos numerados com defaults
+seguros, reutilização da configuração existente e cancelamento por `0`/`Esc`.
+Entradas livres ficam restritas aos caminhos, endpoints, modelos não catalogados
+e opções marcadas como `Personalizado/Avançado`; isso evita transformar a
+configuração normal em uma sequência de perguntas de texto.
+
 `BrowserDriver`, `ComputerUseAdapter`, `McpClient` e `SessionStore` são interfaces estáveis. `IDENTITY.md` fornece a identidade base e `PREFERENCES.md` complementa e prevalece em estilo/formato; o contexto é redigido antes de chegar ao provider e é usado pelo chat do CMD e pelo Gateway. Playwright está integrado ao CLI, mas continua desligado por padrão e sujeito à policy de URL, que valida esquema, userinfo, allowlist, DNS, redes privadas e metadata endpoints inclusive na URL final após redirect. Downloads e arquivos de estado de sessão são controlados no workspace e perfis persistentes exigem opt-in explícito e podem ser revogados com comando protegido. O adapter cobre navegação, snapshot, clique/duplo clique, drag-and-drop, preenchimento, hover, teclado, checkboxes, selects, rolagem, diálogos, abas, redimensionamento, upload/download, tracing e salvamento/restauração de estado; execução JavaScript arbitrária não é exposta pelo CLI. O adapter Windows de computer use já captura screenshot e executa sequências JSON com policy, aprovação, cancelamento cooperativo e emergency stop; `computer plan` gera uma sequência JSON validada pelo provider sem executá-la, e o smoke real somente leitura de `computer plan`/`computer auto` cobre plano, execução, screenshots e receipts. Browser Use/Stagehand continuam opcionais até implementação e testes próprios; shell já possui executor restrito ao workspace, deny-list destrutiva/de rede, allowlist configurável, timeout, kill-on-drop, limite de saída e quotas de CPU/memória/processos no Windows via Job Object; em sistemas sem esse mecanismo, as quotas permanecem indisponíveis. Plugins possuem instalação/atualização transacional, rollback e ficam desabilitados até sandbox verificável.
 
 ## 6. Configuração e comandos

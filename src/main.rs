@@ -900,6 +900,167 @@ fn save_menu_config(path: &Path, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
+/// Select a value from a numbered catalog.  This is intentionally the default
+/// interaction for the terminal UX; free-form prompts remain reserved for the
+/// explicitly labelled advanced paths.
+fn choose_catalog_value(
+    label: &str,
+    options: &[(String, String)],
+    current: &str,
+    automatic: bool,
+) -> Result<Option<String>> {
+    if options.is_empty() {
+        return Ok(None);
+    }
+    let default_index = options
+        .iter()
+        .position(|(_, value)| value == current)
+        .unwrap_or(0);
+    if automatic || !std::io::stdin().is_terminal() {
+        return Ok(Some(options[default_index].1.clone()));
+    }
+
+    println!("\n  {label}");
+    for (index, (display, value)) in options.iter().enumerate() {
+        let marker = if index == default_index { "*" } else { " " };
+        println!("  [{:>2}] {marker} {display} ({value})", index + 1);
+    }
+    println!("  [0] Voltar/cancelar");
+    loop {
+        print!("  Escolha [{}]: ", default_index + 1);
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(Some(options[default_index].1.clone()));
+        }
+        if matches!(input, "0" | "q" | "Q" | "esc" | "Esc") {
+            return Ok(None);
+        }
+        if let Ok(number) = input.parse::<usize>()
+            && let Some((_, value)) = options.get(number.saturating_sub(1))
+        {
+            return Ok(Some(value.clone()));
+        }
+        println!("  Opção inválida. Escolha um número do catálogo.");
+    }
+}
+
+fn static_catalog(options: &[(&str, &str)]) -> Vec<(String, String)> {
+    options
+        .iter()
+        .map(|(display, value)| ((*display).to_string(), (*value).to_string()))
+        .collect()
+}
+
+fn apply_resource_profile(config: &mut AppConfig, profile: &str) -> Result<()> {
+    let (gpu, memory, cpu, concurrent) = match profile {
+        "economy" => (35, 1024, 50, 1),
+        "balanced" => (70, 2048, 80, 2),
+        "performance" => (95, 8192, 100, 4),
+        "custom" => return Ok(()),
+        _ => anyhow::bail!("perfil de recursos inválido: {profile}"),
+    };
+    config.resources.profile = profile.to_string();
+    config.resources.max_gpu_percent = gpu;
+    config.resources.max_memory_mb = memory;
+    config.resources.max_cpu_percent = cpu;
+    config.resources.max_concurrent = concurrent;
+    Ok(())
+}
+
+fn apply_capability_profile(config: &mut AppConfig, profile: &str) -> Result<()> {
+    match profile {
+        "essential" => {
+            config.features.browser = false;
+            config.features.computer_use = false;
+            config.features.shell = false;
+            config.features.mcp = false;
+            config.features.channels = false;
+            config.features.memory = false;
+            config.features.scheduler = true;
+            config.features.audio = false;
+        }
+        "automation" => {
+            config.features.browser = true;
+            config.features.computer_use = false;
+            config.features.shell = true;
+            config.features.mcp = false;
+            config.features.channels = false;
+            config.features.memory = true;
+            config.features.scheduler = true;
+            config.features.audio = false;
+        }
+        "complete" => {
+            config.features.browser = true;
+            config.features.computer_use = true;
+            config.features.shell = true;
+            config.features.mcp = true;
+            config.features.channels = true;
+            config.features.memory = true;
+            config.features.scheduler = true;
+            config.features.audio = false;
+        }
+        "custom" => {}
+        _ => anyhow::bail!("perfil de capacidades inválido: {profile}"),
+    }
+    config.audio.enabled = config.features.audio;
+    Ok(())
+}
+
+fn provider_catalog_options(config: &AppConfig) -> Vec<(String, String)> {
+    let mut options = Vec::new();
+    for provider in &config.providers {
+        options.push((
+            format!(
+                "Usar provider existente: {} ({})",
+                provider.alias, provider.kind
+            ),
+            format!("alias:{}", provider.alias),
+        ));
+    }
+    for spec in providers::catalog() {
+        options.push((
+            format!("{} — {}", spec.label, spec.adapter),
+            format!("kind:{}", spec.id),
+        ));
+    }
+    options.push(("Configurar provider depois".into(), "none".into()));
+    options.push(("Personalizado/Avançado".into(), "custom".into()));
+    options
+}
+
+fn configured_provider_options(config: &AppConfig) -> Vec<(String, String)> {
+    config
+        .providers
+        .iter()
+        .map(|provider| {
+            (
+                format!(
+                    "{} — {} / {}",
+                    provider.alias, provider.kind, provider.model
+                ),
+                provider.alias.clone(),
+            )
+        })
+        .collect()
+}
+
+fn channel_catalog_options() -> Vec<(String, String)> {
+    let mut options = channels::catalog()
+        .iter()
+        .map(|spec| {
+            (
+                format!("{} — {} [{}]", spec.label, spec.adapter, spec.capabilities),
+                spec.id.to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    options.push(("Personalizado/Avançado".into(), "custom".into()));
+    options
+}
+
 fn edit_menu_value(
     path: &Path,
     config: &mut AppConfig,
@@ -940,83 +1101,148 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
             "1" => provider_command(config, path, ProviderCommands::List, cli).await?,
             "2" => provider_command(config, path, ProviderCommands::Catalog, cli).await?,
             "3" => {
-                let kind = setup_ask("Tipo do provider", "custom", false, true)?;
-                let alias = setup_ask("Alias", &kind, false, true)?;
-                let base_url = setup_ask("URL base", "", false, true)?;
-                let model = setup_ask("Modelo", "", false, true)?;
-                let api_key_env = setup_ask(
-                    "Variável da chave (nunca a chave)",
-                    "SAPIENS_API_KEY",
-                    false,
-                    true,
-                )?;
-                let protocol = setup_ask("Protocolo", "chat_completions", false, true)?;
-                provider_command(
-                    config,
-                    path,
-                    ProviderCommands::Add {
-                        kind,
-                        alias: Some(alias),
-                        base_url: Some(base_url),
-                        api_key_env: Some(api_key_env),
-                        model: Some(model),
-                        protocol: Some(protocol),
-                    },
-                    cli,
-                )
-                .await?;
+                let options = providers::catalog()
+                    .iter()
+                    .map(|spec| {
+                        (
+                            format!("{} — {}", spec.label, spec.adapter),
+                            spec.id.to_string(),
+                        )
+                    })
+                    .chain(std::iter::once((
+                        "Personalizado/Avançado".into(),
+                        "custom".into(),
+                    )))
+                    .collect::<Vec<_>>();
+                let Some(kind) =
+                    choose_catalog_value("Escolha o provider", &options, "openai", false)?
+                else {
+                    continue;
+                };
+                let spec = providers::find_spec(&kind);
+                let alias = if kind == "custom" {
+                    setup_ask("Alias personalizado", "principal", false, true)?
+                } else {
+                    let mut candidate = kind.clone();
+                    let mut suffix = 2;
+                    while config.providers.iter().any(|p| p.alias == candidate) {
+                        candidate = format!("{kind}-{suffix}");
+                        suffix += 1;
+                    }
+                    candidate
+                };
+                let (base_url, model, api_key_env, protocol) = if kind == "custom" {
+                    (
+                        setup_ask("URL base personalizada", "", false, true)?,
+                        setup_ask("Modelo personalizado", "", false, true)?,
+                        setup_ask(
+                            "Variável da credencial (nunca a chave)",
+                            "SAPIENS_API_KEY",
+                            false,
+                            true,
+                        )?,
+                        setup_ask("Protocolo avançado", "chat_completions", false, true)?,
+                    )
+                } else {
+                    (
+                        String::new(),
+                        String::new(),
+                        spec.filter(|item| item.credential_hint != "nenhuma")
+                            .map(|item| item.credential_hint.to_string())
+                            .unwrap_or_default(),
+                        spec.and_then(|item| item.protocols.split(',').next())
+                            .unwrap_or("chat_completions")
+                            .to_string(),
+                    )
+                };
+                config.providers.push(ProviderConfig {
+                    alias: alias.clone(),
+                    kind,
+                    base_url,
+                    model,
+                    api_key_env,
+                    protocol,
+                    ..Default::default()
+                });
+                config.active_provider = Some(alias.clone());
+                save_menu_config(path, config)?;
+                println!("  Provider {alias} selecionado como ativo.");
             }
             "4" => {
-                let alias = setup_ask("Alias existente", "principal", false, true)?;
+                let options = configured_provider_options(config);
+                let Some(alias) = choose_catalog_value(
+                    "Provider para configurar (avançado)",
+                    &options,
+                    config.active_provider.as_deref().unwrap_or(""),
+                    false,
+                )?
+                else {
+                    continue;
+                };
                 provider_command(config, path, ProviderCommands::Configure { alias }, cli).await?;
             }
             "5" => {
-                let alias = setup_ask("Alias para remover", "", false, true)?;
+                let options = configured_provider_options(config);
+                let Some(alias) = choose_catalog_value(
+                    "Provider para remover",
+                    &options,
+                    config.active_provider.as_deref().unwrap_or(""),
+                    false,
+                )?
+                else {
+                    continue;
+                };
                 provider_command(config, path, ProviderCommands::Remove { alias }, cli).await?;
             }
             "6" => {
-                let alias = setup_ask(
-                    "Alias para testar",
-                    config.active_provider.as_deref().unwrap_or("principal"),
+                let options = configured_provider_options(config);
+                let Some(alias) = choose_catalog_value(
+                    "Provider para testar",
+                    &options,
+                    config.active_provider.as_deref().unwrap_or(""),
                     false,
-                    true,
-                )?;
+                )?
+                else {
+                    continue;
+                };
                 provider_command(config, path, ProviderCommands::Test { alias }, cli).await?;
             }
             "7" => {
-                let alias = setup_ask(
-                    "Alias para listar modelos",
-                    config.active_provider.as_deref().unwrap_or("principal"),
+                let options = configured_provider_options(config);
+                let Some(alias) = choose_catalog_value(
+                    "Provider para listar modelos",
+                    &options,
+                    config.active_provider.as_deref().unwrap_or(""),
                     false,
-                    true,
-                )?;
+                )?
+                else {
+                    continue;
+                };
                 provider_command(config, path, ProviderCommands::Models { alias }, cli).await?;
             }
             "8" => {
-                let alias = setup_ask(
-                    "Alias ativo",
-                    config.active_provider.as_deref().unwrap_or("principal"),
+                let options = configured_provider_options(config);
+                let Some(alias) = choose_catalog_value(
+                    "Provider ativo",
+                    &options,
+                    config.active_provider.as_deref().unwrap_or(""),
                     false,
-                    true,
-                )?;
+                )?
+                else {
+                    continue;
+                };
                 config::find_provider(config, &alias)?;
-                let fallback = setup_ask(
-                    "Fallbacks em ordem, separados por vírgula (vazio para limpar)",
-                    &config.fallback.join(","),
-                    false,
-                    true,
-                )?;
                 config.active_provider = Some(alias.clone());
-                config.fallback = fallback
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-                    .collect();
-                for fallback_alias in &config.fallback {
-                    config::find_provider(config, fallback_alias)?;
-                }
                 save_menu_config(path, config)?;
+                let fallback_display = if config.fallback.is_empty() {
+                    "nenhum".to_string()
+                } else {
+                    config.fallback.join(", ")
+                };
+                println!("  Fallback atual preservado: {fallback_display}");
+                println!(
+                    "  Para editar a cadeia manualmente, use [4] Configurar provider existente (avançado)."
+                );
             }
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
@@ -1038,41 +1264,172 @@ async fn run_channel_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Res
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => channel_command(config, path, ChannelCommands::List, cli).await?,
             "2" => {
-                let kind = setup_ask("Tipo do canal", "telegram", false, true)?;
-                let name = setup_ask("Nome da configuração", &kind, false, true)?;
-                channel_command(
-                    config,
-                    path,
-                    ChannelCommands::Add {
+                let Some(kind) = choose_catalog_value(
+                    "Escolha o canal",
+                    &channel_catalog_options(),
+                    "telegram",
+                    false,
+                )?
+                else {
+                    continue;
+                };
+                if kind == "custom" {
+                    let name = setup_ask("Nome do canal personalizado", "canal", false, true)?;
+                    let custom_kind =
+                        setup_ask("Tipo do canal personalizado", "webhooks", false, true)?;
+                    channel_command(
+                        config,
+                        path,
+                        ChannelCommands::Add {
+                            kind: custom_kind,
+                            name: Some(name),
+                        },
+                        cli,
+                    )
+                    .await?;
+                } else {
+                    let mut name = kind.clone();
+                    let mut suffix = 2;
+                    while config.channels.iter().any(|item| item.name == name) {
+                        name = format!("{kind}-{suffix}");
+                        suffix += 1;
+                    }
+                    let spec = channels::find_spec(&kind)?;
+                    let credential_env = if spec.credential_hint.starts_with("SAPIENS_") {
+                        spec.credential_hint.to_string()
+                    } else {
+                        String::new()
+                    };
+                    config.channels.push(ChannelConfig {
+                        name: name.clone(),
                         kind,
-                        name: Some(name),
-                    },
-                    cli,
-                )
-                .await?;
+                        enabled: false,
+                        credential_env,
+                        allowlist: vec![],
+                    });
+                    save_menu_config(path, config)?;
+                    println!(
+                        "  Canal {name} adicionado como opcional; configure a allowlist no modo avançado antes de habilitar."
+                    );
+                }
             }
             "3" => {
-                let name = setup_ask("Nome do canal", "telegram", false, true)?;
-                channel_command(config, path, ChannelCommands::Configure { name }, cli).await?;
+                let options = config
+                    .channels
+                    .iter()
+                    .map(|channel| {
+                        (
+                            format!("{} — {}", channel.name, channel.kind),
+                            channel.name.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let Some(name) =
+                    choose_catalog_value("Canal para configurar", &options, "", false)?
+                else {
+                    continue;
+                };
+                let advanced_options = static_catalog(&[
+                    ("Manter configuração atual", "keep"),
+                    ("Aplicar credencial padrão do catálogo", "default"),
+                    ("Configuração avançada (pode solicitar dados)", "advanced"),
+                ]);
+                let current = config
+                    .channels
+                    .iter()
+                    .find(|item| item.name == name)
+                    .map(|item| {
+                        if item.credential_env.is_empty() {
+                            "default"
+                        } else {
+                            "keep"
+                        }
+                    })
+                    .unwrap_or("keep");
+                let Some(mode) = choose_catalog_value(
+                    "Modo de configuração",
+                    &advanced_options,
+                    current,
+                    false,
+                )?
+                else {
+                    continue;
+                };
+                if mode == "advanced" {
+                    channel_command(config, path, ChannelCommands::Configure { name }, cli).await?;
+                } else if mode == "default" {
+                    let index = config
+                        .channels
+                        .iter()
+                        .position(|item| item.name == name)
+                        .unwrap();
+                    let spec = channels::find_spec(&config.channels[index].kind)?;
+                    if spec.credential_hint.starts_with("SAPIENS_") {
+                        config.channels[index].credential_env = spec.credential_hint.into();
+                    }
+                    save_menu_config(path, config)?;
+                    println!(
+                        "  Credencial padrão aplicada. O canal permanece desabilitado até a allowlist ser configurada."
+                    );
+                } else {
+                    println!("  Configuração atual preservada.");
+                }
             }
             "4" => {
-                let name = setup_ask("Nome do canal para testar", "telegram", false, true)?;
+                let options = config
+                    .channels
+                    .iter()
+                    .map(|channel| {
+                        (
+                            format!("{} — {}", channel.name, channel.kind),
+                            channel.name.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let Some(name) = choose_catalog_value("Canal para testar", &options, "", false)?
+                else {
+                    continue;
+                };
                 channel_command(config, path, ChannelCommands::Test { name }, cli).await?;
             }
             "5" => channel_command(config, path, ChannelCommands::Start, cli).await?,
             "6" => {
-                let name = setup_ask("Nome do canal", "telegram", false, true)?;
+                let options = config
+                    .channels
+                    .iter()
+                    .map(|channel| {
+                        (
+                            format!("{} — {}", channel.name, channel.kind),
+                            channel.name.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let Some(name) =
+                    choose_catalog_value("Canal para habilitar/desabilitar", &options, "", false)?
+                else {
+                    continue;
+                };
                 let index = config
                     .channels
                     .iter()
                     .position(|item| item.name == name)
                     .ok_or_else(|| anyhow::anyhow!("canal não encontrado: {name}"))?;
-                let enabled = setup_ask_bool(
-                    "Habilitar este canal?",
-                    config.channels[index].enabled,
+                let enabled_options =
+                    static_catalog(&[("Habilitar", "true"), ("Desabilitar", "false")]);
+                let Some(enabled_value) = choose_catalog_value(
+                    "Estado do canal",
+                    &enabled_options,
+                    if config.channels[index].enabled {
+                        "true"
+                    } else {
+                        "false"
+                    },
                     false,
-                    true,
-                )?;
+                )?
+                else {
+                    continue;
+                };
+                let enabled = enabled_value == "true";
                 config.channels[index].enabled = enabled;
                 config.features.channels = config.channels.iter().any(|item| item.enabled);
                 save_menu_config(path, config)?;
@@ -1650,108 +2007,200 @@ fn run_setup(
         }
     );
     let workspace_default = config.security.workspace.display().to_string();
-    let workspace = setup_ask("Workspace", &workspace_default, cli.yes, force_interactive)?;
+    let workspace_options = vec![
+        (
+            format!("Manter workspace atual: {workspace_default}"),
+            workspace_default.clone(),
+        ),
+        (
+            "Usar workspace padrão do agente".into(),
+            config::config_dir()?
+                .join("workspace")
+                .display()
+                .to_string(),
+        ),
+        ("Personalizado/Avançado".into(), "custom".into()),
+    ];
+    let Some(workspace_choice) = choose_catalog_value(
+        "Workspace",
+        &workspace_options,
+        &workspace_default,
+        cli.yes && !force_interactive,
+    )?
+    else {
+        println!("Configuração cancelada.");
+        return Ok(());
+    };
+    let workspace = if workspace_choice == "custom" {
+        setup_ask(
+            "Workspace personalizado",
+            &workspace_default,
+            cli.yes,
+            force_interactive,
+        )?
+    } else {
+        workspace_choice
+    };
     config.security.workspace = PathBuf::from(workspace);
     std::fs::create_dir_all(&config.security.workspace)?;
 
-    let alias = setup_ask(
-        "Alias do provider (vazio para configurar depois)",
-        config.active_provider.as_deref().unwrap_or("principal"),
-        cli.yes,
-        force_interactive,
-    )?;
-    if !alias.is_empty() {
-        let existing = config.providers.iter().find(|p| p.alias == alias);
-        let base_default = existing.map(|p| p.base_url.as_str()).unwrap_or("");
-        let model_default = existing.map(|p| p.model.as_str()).unwrap_or("");
-        let key_default = existing
-            .map(|p| p.api_key_env.as_str())
-            .unwrap_or("SAPIENS_API_KEY");
-        let base_url = setup_ask(
-            "URL base OpenAI-compatible (vazio para configurar depois)",
-            base_default,
-            cli.yes,
-            force_interactive,
-        )?;
-        let model = setup_ask("Nome do modelo", model_default, cli.yes, force_interactive)?;
-        let api_key_env = setup_ask(
-            "Nome da variável da chave (nunca a chave)",
-            key_default,
-            cli.yes,
-            force_interactive,
-        )?;
+    let provider_options = provider_catalog_options(config);
+    let current_provider = config
+        .active_provider
+        .as_ref()
+        .map(|alias| format!("alias:{alias}"))
+        .unwrap_or_else(|| "none".into());
+    let Some(provider_choice) = choose_catalog_value(
+        "Provider e autenticação",
+        &provider_options,
+        &current_provider,
+        cli.yes && !force_interactive,
+    )?
+    else {
+        println!("Configuração cancelada.");
+        return Ok(());
+    };
+    if let Some(alias) = provider_choice.strip_prefix("alias:") {
+        config::find_provider(config, alias)?;
+        config.active_provider = Some(alias.to_string());
+    } else if let Some(kind) = provider_choice.strip_prefix("kind:") {
+        let spec = providers::find_spec(kind)
+            .ok_or_else(|| anyhow::anyhow!("provider não encontrado no catálogo: {kind}"))?;
+        let alias = kind.to_string();
         if let Some(provider) = config.providers.iter_mut().find(|p| p.alias == alias) {
-            provider.base_url = base_url;
-            provider.model = model;
-            provider.api_key_env = api_key_env;
+            provider.kind = kind.to_string();
+            provider.protocol = spec
+                .protocols
+                .split(',')
+                .next()
+                .unwrap_or("chat_completions")
+                .into();
+            if provider.api_key_env.is_empty() && spec.credential_hint != "nenhuma" {
+                provider.api_key_env = spec.credential_hint.into();
+            }
         } else {
             config.providers.push(ProviderConfig {
                 alias: alias.clone(),
-                base_url,
-                model,
-                api_key_env,
+                kind: kind.to_string(),
+                protocol: spec
+                    .protocols
+                    .split(',')
+                    .next()
+                    .unwrap_or("chat_completions")
+                    .into(),
+                api_key_env: if spec.credential_hint == "nenhuma" {
+                    String::new()
+                } else {
+                    spec.credential_hint.into()
+                },
                 ..Default::default()
             });
         }
         config.active_provider = Some(alias);
+        println!(
+            "  Provider selecionado. Endpoint e modelo podem ser definidos em [2] Provider e API → Avançado."
+        );
+    } else if provider_choice == "custom" {
+        let alias = setup_ask(
+            "Alias personalizado",
+            "principal",
+            cli.yes,
+            force_interactive,
+        )?;
+        let base_url = setup_ask("URL base personalizada", "", cli.yes, force_interactive)?;
+        let model = setup_ask("Modelo personalizado", "", cli.yes, force_interactive)?;
+        let api_key_env = setup_ask(
+            "Variável da credencial (nunca a chave)",
+            "SAPIENS_API_KEY",
+            cli.yes,
+            force_interactive,
+        )?;
+        config.providers.retain(|provider| provider.alias != alias);
+        config.providers.push(ProviderConfig {
+            alias: alias.clone(),
+            base_url,
+            model,
+            api_key_env,
+            ..Default::default()
+        });
+        config.active_provider = Some(alias);
     }
-    config.security.mode = setup_ask(
-        "Modo de segurança [readonly/supervised/trusted]",
+
+    let security_options = static_catalog(&[
+        ("Somente leitura", "readonly"),
+        ("Supervisionado (recomendado)", "supervised"),
+        ("Confiável", "trusted"),
+        ("YOLO (alto risco)", "yolo"),
+    ]);
+    if let Some(mode) = choose_catalog_value(
+        "Perfil de segurança",
+        &security_options,
         &config.security.mode,
-        cli.yes,
-        force_interactive,
-    )?;
-    config.features.browser = setup_ask_bool(
-        "Ativar browser agora?",
-        config.features.browser,
-        cli.yes,
-        force_interactive,
-    )?;
-    config.features.shell = setup_ask_bool(
-        "Ativar shell agora?",
-        config.features.shell,
-        cli.yes,
-        force_interactive,
-    )?;
-    config.features.mcp = setup_ask_bool(
-        "Ativar MCP agora?",
-        config.features.mcp,
-        cli.yes,
-        force_interactive,
-    )?;
-    config.features.channels = setup_ask_bool(
-        "Ativar canais agora?",
-        config.features.channels,
-        cli.yes,
-        force_interactive,
-    )?;
-    config.interface.mode = setup_ask(
-        "Interface de configuração [powershell/web/both]",
+        cli.yes && !force_interactive,
+    )? {
+        config.security.mode = mode;
+    } else {
+        println!("Configuração cancelada.");
+        return Ok(());
+    }
+
+    let capability_options = static_catalog(&[
+        ("Essencial — leve e seguro", "essential"),
+        (
+            "Automação — browser, shell, memória e scheduler",
+            "automation",
+        ),
+        ("Completo — todas as capacidades disponíveis", "complete"),
+        ("Personalizado/Avançado", "custom"),
+    ]);
+    if let Some(profile) = choose_catalog_value(
+        "Perfil de capacidades",
+        &capability_options,
+        "custom",
+        cli.yes && !force_interactive,
+    )? {
+        apply_capability_profile(config, &profile)?;
+    } else {
+        println!("Configuração cancelada.");
+        return Ok(());
+    }
+
+    let interface_options = static_catalog(&[
+        ("PowerShell/CMD — recomendado", "powershell"),
+        ("WebUI local — somente quando solicitada", "web"),
+        ("PowerShell/CMD + WebUI opcional", "both"),
+    ]);
+    if let Some(mode) = choose_catalog_value(
+        "Interface de configuração",
+        &interface_options,
         &config.interface.mode,
-        cli.yes,
-        force_interactive,
-    )?;
-    if !["powershell", "web", "both"].contains(&config.interface.mode.as_str()) {
-        anyhow::bail!("interface deve ser powershell, web ou both");
+        cli.yes && !force_interactive,
+    )? {
+        config.interface.mode = mode;
+        config.interface.auto_open_browser = false;
+    } else {
+        println!("Configuração cancelada.");
+        return Ok(());
     }
-    config.features.audio = setup_ask_bool(
-        "Ativar áudio opcional nos canais?",
-        config.features.audio,
-        cli.yes,
-        force_interactive,
-    )?;
-    config.audio.enabled = config.features.audio;
-    config.resources.profile = setup_ask(
-        "Perfil de recursos [economy/balanced/performance/custom]",
+
+    let resource_options = static_catalog(&[
+        ("Econômico", "economy"),
+        ("Equilibrado (recomendado)", "balanced"),
+        ("Desempenho", "performance"),
+        ("Personalizado/Avançado", "custom"),
+    ]);
+    if let Some(profile) = choose_catalog_value(
+        "Perfil de recursos",
+        &resource_options,
         &config.resources.profile,
-        cli.yes,
-        force_interactive,
-    )?;
-    if !["economy", "balanced", "performance", "custom"]
-        .contains(&config.resources.profile.as_str())
-    {
-        anyhow::bail!("perfil de recursos inválido");
+        cli.yes && !force_interactive,
+    )? {
+        apply_resource_profile(config, &profile)?;
+    } else {
+        println!("Configuração cancelada.");
+        return Ok(());
     }
+
     config.initialized = true;
     config::save(path, config)?;
     println!("Configuração salva em {}", path.display());

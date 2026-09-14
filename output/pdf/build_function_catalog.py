@@ -257,7 +257,7 @@ def header_footer(canvas, doc):
 catalog = [
     (
         "Inicio, configuracao e operacao",
-        "Comandos para instalar, iniciar, configurar e diagnosticar o runtime. O fluxo principal continua no CMD e os wrappers escondem o binario interno.",
+        "Comandos para instalar, iniciar, configurar e diagnosticar o runtime. O fluxo principal continua no CMD, usa catalogos numerados com defaults e os wrappers escondem o binario interno.",
         [
             ("sapiens-agent init", "Inicializa a configuracao local e o workspace.", "external_write", "pronto"),
             ("sapiens-agent setup", "Executa o assistente de configuracao no terminal.", "external_write", "pronto"),
@@ -355,6 +355,8 @@ story = [
     rich("Atalhos de inicio", styles["Callout"]),
     p("1. sapiens-agent setup", styles["Command"]),
     p("0. sapiens-agent  (menu interativo)", styles["Command"]),
+    p("Configuracao guiada: provider, seguranca, capacidades, interface e recursos por selecao", styles["Body"]),
+    p("Entradas livres ficam em Personalizado/Avancado; Enter aceita o recomendado e 0/Esc cancela", styles["Body"]),
     p("2. sapiens-agent provider add custom --alias principal --base-url URL --model MODELO", styles["Command"]),
     p("3. sapiens-agent provider use principal", styles["Command"]),
     p("4. sapiens-agent start", styles["Command"]),
@@ -464,8 +466,8 @@ story.extend(
         ),
         rich("Evidencia de release", styles["Section"]),
         p(
-            "O release Windows validado mede 5.101.568 bytes e possui SHA-256 "
-            "BBA1A9F0890A8399BC82E7BFD3392036684F5FEA213FF91D0FC685992AD5D20B. "
+            "O release Windows validado mede 5.119.488 bytes e possui SHA-256 "
+            "610D5BEE11A15E3B62C736867A649B12EF10580541C2E9BAD862DA5EE6C85D52. "
             "A documentacao detalhada esta em docs/ARCHITECTURE.md e docs/CAPABILITIES.md.",
             styles["Body"],
         ),

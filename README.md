@@ -25,6 +25,14 @@ as alterações usam a mesma configuração TOML do gateway e da WebUI. A área 
 controle também oferece exportação, importação e restauração do backup
 `config.toml.bak`.
 
+Na configuração inicial, o terminal usa catálogos numerados e defaults seguros:
+provider, autenticação, perfil de segurança, capacidades, interface e recursos
+são escolhidos por menu. O fluxo não solicita texto livre para opções que já
+possuem catálogo; caminhos, endpoints, modelos não catalogados e o modo
+personalizado ficam em `Personalizado/Avançado`. A configuração existente é
+oferecida primeiro para reutilização e a WebUI continua opcional, sem abertura
+automática do navegador.
+
 ```powershell
  cargo run
 ```
