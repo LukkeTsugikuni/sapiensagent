@@ -1282,9 +1282,8 @@ fn run_provider_credential_menu(config: &AppConfig) -> Result<()> {
     else {
         return Ok(());
     };
-    println!(
-        "  A chave será digitada de forma oculta e salva no Gerenciador de Credenciais do Windows."
-    );
+    println!("  Digite ou cole com Ctrl+V e pressione Enter; a chave fica oculta.");
+    println!("  A chave será salva no Gerenciador de Credenciais do Windows.");
     let key = prompt_api_key("  Chave da API (Enter cancela): ")?;
     if key.trim().is_empty() {
         println!("  Operação cancelada.");
@@ -1301,43 +1300,42 @@ fn prompt_api_key(prompt: &str) -> Result<String> {
         use std::io::{self, Write};
         use windows_sys::Win32::System::Console::{
             ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, GetConsoleMode,
-            GetStdHandle, ReadConsoleW, STD_INPUT_HANDLE, SetConsoleMode,
+            GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
         };
 
-        print!("{prompt}");
+        print!("{prompt} ");
         io::stdout().flush()?;
         let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
         let mut original_mode = 0;
         if unsafe { GetConsoleMode(input, &mut original_mode) } == 0 {
-            return Ok(rpassword::prompt_password("")?);
+            let mut value = String::new();
+            io::stdin().read_line(&mut value)?;
+            return Ok(value.trim_end_matches(['\r', '\n']).to_string());
         }
         let hidden_line_mode =
             (original_mode | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT) & !ENABLE_ECHO_INPUT;
         if unsafe { SetConsoleMode(input, hidden_line_mode) } == 0 {
-            return Ok(rpassword::prompt_password("")?);
+            let mut value = String::new();
+            io::stdin().read_line(&mut value)?;
+            return Ok(value.trim_end_matches(['\r', '\n']).to_string());
         }
-        let mut buffer = [0_u16; 4096];
-        let mut read = 0_u32;
-        let read_result = unsafe {
-            ReadConsoleW(
-                input,
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                &mut read,
-                std::ptr::null(),
-            )
-        };
+        let mut value = String::new();
+        let read_result = io::stdin()
+            .read_line(&mut value)
+            .map(|_| value.trim_end_matches(['\r', '\n']).to_string())
+            .map_err(anyhow::Error::from);
         let restore_result = unsafe { SetConsoleMode(input, original_mode) };
         println!();
-        if read_result == 0 {
-            anyhow::bail!("não foi possível ler a chave no terminal")
-        }
         if restore_result == 0 {
             anyhow::bail!("não foi possível restaurar o modo do terminal")
         }
-        return Ok(String::from_utf16_lossy(&buffer[..read as usize])
-            .trim_end_matches(['\r', '\n'])
-            .to_string());
+        let value = read_result?;
+        if value.is_empty() {
+            println!("  Nenhuma chave recebida.");
+        } else {
+            println!("  Chave recebida com sucesso.");
+        }
+        return Ok(value);
     }
     #[cfg(not(windows))]
     {
