@@ -1119,6 +1119,7 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
         println!("  [6] Testar conexão");
         println!("  [7] Listar modelos");
         println!("  [8] Provider ativo e fallback");
+        println!("  [9] Cadastrar chave da API (entrada oculta)");
         println!("  [0] Voltar");
         match menu_choice("Escolha uma opção")?.as_str() {
             "1" => provider_command(config, path, ProviderCommands::List, cli).await?,
@@ -1247,10 +1248,50 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
             "8" => {
                 run_provider_routing_menu(path, config)?;
             }
+            "9" => {
+                run_provider_credential_menu(config)?;
+            }
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
         }
     }
+    Ok(())
+}
+
+fn run_provider_credential_menu(config: &AppConfig) -> Result<()> {
+    let options = configured_provider_options(config)
+        .into_iter()
+        .filter(|(_, alias)| {
+            config
+                .providers
+                .iter()
+                .find(|provider| provider.alias == *alias)
+                .is_some_and(|provider| !provider.api_key_env.trim().is_empty())
+        })
+        .collect::<Vec<_>>();
+    if options.is_empty() {
+        println!("  Nenhum provider com chave configurado.");
+        return Ok(());
+    }
+    let Some(alias) = choose_catalog_value(
+        "Provider para cadastrar a chave",
+        &options,
+        config.active_provider.as_deref().unwrap_or(""),
+        false,
+    )?
+    else {
+        return Ok(());
+    };
+    println!(
+        "  A chave será digitada de forma oculta e salva no Gerenciador de Credenciais do Windows."
+    );
+    let key = rpassword::prompt_password("  Chave da API (Enter cancela): ")?;
+    if key.trim().is_empty() {
+        println!("  Operação cancelada.");
+        return Ok(());
+    }
+    sapiens_agent::secrets::store_provider_key(&alias, key.trim())?;
+    println!("  Chave salva para {alias}. Teste a conexão pela opção [6].");
     Ok(())
 }
 

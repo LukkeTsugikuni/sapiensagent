@@ -12,6 +12,7 @@ pub mod plugins;
 pub mod policy;
 pub mod providers;
 pub mod scheduler;
+pub mod secrets;
 pub mod sessions;
 pub mod shell;
 pub mod skills;

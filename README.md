@@ -112,18 +112,21 @@ sapiens-agent chat
 sapiens-agent start
 ```
 
-Para usar Cerebras, a opção `cerebras` já preenche o endpoint
-`https://api.cerebras.ai/v1`, o modelo `gpt-oss-120b` e a variável
-`CEREBRAS_API_KEY`. Defina apenas a chave no ambiente do PowerShell (sem
-colocá-la no arquivo de configuração):
+Para usar Cerebras sem comandos avançados, abra `sapiens menu`, entre em
+`Provider e API` e siga este fluxo:
 
 ```powershell
-$env:CEREBRAS_API_KEY = "sua-chave-da-cerebras"
-sapiens-agent provider add cerebras --alias cerebras
-sapiens-agent provider use cerebras
-sapiens-agent provider test cerebras
-sapiens-agent chat
+sapiens menu
+# [3] Adicionar provider → Cerebras Inference
+# [9] Cadastrar chave da API (entrada oculta)
+# [6] Testar conexão
+# [8] Provider ativo e fallback → [1] Cerebras
 ```
+
+O menu preenche automaticamente o endpoint `https://api.cerebras.ai/v1`, o
+modelo `gpt-oss-120b` e a variável `CEREBRAS_API_KEY`. A chave é guardada no
+Gerenciador de Credenciais do Windows; ela não entra no `config.toml`, no
+histórico ou nos logs.
 
 Se preferir configurar sem decorar comandos, execute `sapiens-agent` no
 PowerShell normal e escolha `Provider e API` → `Provider ativo e fallback`.
@@ -150,7 +153,7 @@ O servidor escuta apenas `127.0.0.1:8787` por padrão. A WebUI está em `http://
 - WebUI local com dashboard, configuração rápida, canais/mídia, skills, recursos e chat com histórico visual de mensagens, novas conversas, limpeza e contexto enviado ao provider; ela usa a mesma configuração do PowerShell e só é aberta com solicitação explícita.
 - Perfis de recursos `economy`, `balanced`, `performance` e `custom`, com limites configuráveis de GPU, CPU, memória e concorrência. GPU é permitida, mas governada para não monopolizar a máquina.
 - Configuração de áudio opcional para canais multimídia, com limites de tamanho/duração e seleção de provider. O runtime identifica e preserva mídia recebida, mas só envia áudio ao modelo quando houver adapter validado.
-- Credenciais somente por variável de ambiente; configuração redigida via `sapiens-agent config show`.
+- Credenciais por variável de ambiente ou pelo Gerenciador de Credenciais do Windows; configuração redigida via `sapiens-agent config show`.
 - Memória opt-in em JSONL e busca textual via `sapiens-agent memory search`.
 - Memória com listagem, busca, exportação e exclusão por sessão; o gateway só grava quando `features.memory=true`.
 - Scheduler persistente para intervalo, execução única e cron UTC, com checkpoint, contagem, pausa/retomada, concorrência limitada, cancelamento cooperativo, limites de profundidade/tokens estimados/custo/tempo e logs redigidos.

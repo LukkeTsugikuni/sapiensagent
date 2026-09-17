@@ -537,16 +537,7 @@ impl ProviderRegistry {
                 );
             }
         }
-        let key = if provider.api_key_env.is_empty() {
-            None
-        } else {
-            Some(std::env::var(&provider.api_key_env).with_context(|| {
-                format!(
-                    "missing credential environment variable {}",
-                    provider.api_key_env
-                )
-            })?)
-        };
+        let key = resolve_provider_key(provider)?;
         let attempts = provider.retries.min(5) as usize + 1;
         if provider.protocol == "anthropic_messages" {
             return self
@@ -1140,7 +1131,9 @@ impl ProviderRegistry {
         if provider.api_key_env.is_empty() {
             return builder;
         }
-        match std::env::var(&provider.api_key_env) {
+        match std::env::var(&provider.api_key_env).or_else(|_| {
+            crate::secrets::read_provider_key(&provider.alias).ok_or(std::env::VarError::NotPresent)
+        }) {
             Ok(key) if provider.protocol == "anthropic_messages" => {
                 builder.header("x-api-key", key)
             }
@@ -1152,6 +1145,24 @@ impl ProviderRegistry {
             Err(_) => builder,
         }
     }
+}
+
+fn resolve_provider_key(provider: &ProviderConfig) -> Result<Option<String>> {
+    if provider.api_key_env.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(key) = std::env::var(&provider.api_key_env)
+        && !key.trim().is_empty()
+    {
+        return Ok(Some(key));
+    }
+    if let Some(key) = crate::secrets::read_provider_key(&provider.alias) {
+        return Ok(Some(key));
+    }
+    bail!(
+        "missing credential environment variable {} (or saved provider credential)",
+        provider.api_key_env
+    )
 }
 
 fn is_retryable(status: reqwest::StatusCode) -> bool {
