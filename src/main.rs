@@ -1285,7 +1285,7 @@ fn run_provider_credential_menu(config: &AppConfig) -> Result<()> {
     println!(
         "  A chave será digitada de forma oculta e salva no Gerenciador de Credenciais do Windows."
     );
-    let key = rpassword::prompt_password("  Chave da API (Enter cancela): ")?;
+    let key = prompt_api_key("  Chave da API (Enter cancela): ")?;
     if key.trim().is_empty() {
         println!("  Operação cancelada.");
         return Ok(());
@@ -1293,6 +1293,56 @@ fn run_provider_credential_menu(config: &AppConfig) -> Result<()> {
     sapiens_agent::secrets::store_provider_key(&alias, key.trim())?;
     println!("  Chave salva para {alias}. Teste a conexão pela opção [6].");
     Ok(())
+}
+
+fn prompt_api_key(prompt: &str) -> Result<String> {
+    #[cfg(windows)]
+    {
+        use std::io::{self, Write};
+        use windows_sys::Win32::System::Console::{
+            ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, GetConsoleMode,
+            GetStdHandle, ReadConsoleW, STD_INPUT_HANDLE, SetConsoleMode,
+        };
+
+        print!("{prompt}");
+        io::stdout().flush()?;
+        let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        let mut original_mode = 0;
+        if unsafe { GetConsoleMode(input, &mut original_mode) } == 0 {
+            return Ok(rpassword::prompt_password("")?);
+        }
+        let hidden_line_mode =
+            (original_mode | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT) & !ENABLE_ECHO_INPUT;
+        if unsafe { SetConsoleMode(input, hidden_line_mode) } == 0 {
+            return Ok(rpassword::prompt_password("")?);
+        }
+        let mut buffer = [0_u16; 4096];
+        let mut read = 0_u32;
+        let read_result = unsafe {
+            ReadConsoleW(
+                input,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                &mut read,
+                std::ptr::null(),
+            )
+        };
+        let restore_result = unsafe { SetConsoleMode(input, original_mode) };
+        println!();
+        if read_result == 0 {
+            anyhow::bail!("não foi possível ler a chave no terminal")
+        }
+        if restore_result == 0 {
+            anyhow::bail!("não foi possível restaurar o modo do terminal")
+        }
+        return Ok(String::from_utf16_lossy(&buffer[..read as usize])
+            .trim_end_matches(['\r', '\n'])
+            .to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(rpassword::prompt_password(prompt)?)
+    }
 }
 
 fn run_provider_routing_menu(path: &Path, config: &mut AppConfig) -> Result<()> {
