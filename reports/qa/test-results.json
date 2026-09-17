@@ -1,0 +1,57 @@
+{
+  "project": "Sapiens Agent",
+  "date": "2026-09-16",
+  "environment": "Windows PowerShell 7, local temporary config directories",
+  "commit": "working tree (catalog PDF redesign and Control UI changes preserved)",
+  "safety": {
+    "real_credentials_used": false,
+    "external_messages_sent": false,
+    "destructive_actions_on_real_machine": true,
+    "provider_simulation": "local fixtures/dry-run plus real Ollama health and generation probe"
+  },
+  "summary": {
+    "automated_tests_passed": 122,
+    "automated_tests_failed": 0,
+    "cli_smoke_passed": 20,
+    "menu_areas_exercised": 8,
+    "gateway_endpoints_checked": 7,
+    "webui_navigation_passed": 11,
+    "webui_failures": 0,
+    "regression_runs": 5,
+    "webui_001_reproduced": true,
+    "webui_001_fixed": true,
+    "responsive_viewport_checked": "390x844",
+    "release_build_passed": true,
+    "real_provider_probe": "PASS: Ollama 0.34.1 CPU mode, qwen3:1.7b, provider, TUI and Sapiens WebUI chat returned HTTP 200"
+  },
+  "automated_suites": [
+    {"command": "cargo test --all --locked", "result": "PASS", "evidence": "111 unit + 4 main + 6 acceptance + 1 scheduler/channel + 0 doctests"},
+    {"command": "cargo fmt --all -- --check", "result": "PASS"},
+    {"command": "cargo clippy --all-targets --all-features --locked -- -D warnings", "result": "PASS"}
+  ],
+  "findings": [
+    {
+      "id": "WEBUI-001",
+      "severity": "high",
+      "status": "PASS",
+      "area": "WebUI navigation",
+      "title": "Tabs Canais e midia e Skills ficam vazias ao clicar",
+      "reproduction": "Inicie o gateway local, abra a WebUI, clique em Canais e midia ou Skills.",
+      "observed": "Antes da correcao o painel nao aparecia; apos a correcao as duas secoes sao exibidas e preenchidas.",
+      "likely_cause": "document.getElementById('channels') e document.getElementById('skills') encontram primeiro os indicadores com os mesmos IDs no painel Visao geral, em vez das secoes de conteudo.",
+      "evidence": "src/gateway.rs usa channelCount/skillCount para indicadores, channelsPanel/skillsPanel para secoes e Playwright validou desktop e viewport 390x844.",
+      "not_fixed_in_this_run": false,
+      "reproduced_runs": 2,
+      "fixed_in_run": 3
+    }
+  ],
+  "limitations": [
+    "Nao foram usadas credenciais reais nem providers externos.",
+    "A instalacao corrompida do Ollama foi removida e reinstalada; os modelos em C:\\Users\\Edson\\.ollama foram preservados.",
+    "TUI e Chat WebUI foram testados com respostas reais e contexto de conversa; nenhum navegador foi aberto pelo TUI.",
+    "Canais reais nao enviaram mensagens; foram cobertos por adapters, fixtures e testes locais.",
+    "Audio real, plugins externos e providers externos permanecem opcionais ou nao foram exercitados contra servicos de terceiros.",
+    "Integracoes externas reais ainda precisam de credenciais e ambiente de homologacao proprio."
+  ],
+  "conclusion": "A CLI, o nucleo local, o TUI e a Control UI passaram na quinta rodada; WEBUI-001 e o layout responsivo foram corrigidos e revalidados. O Ollama 0.34.1 foi reparado, configurado em CPU por compatibilidade com a GPU local, e qwen3:1.7b respondeu com sucesso no provider, no TUI e no Chat WebUI."
+}

@@ -16,7 +16,7 @@ O alias `sapiens.cmd` também encaminha comandos para o runtime principal.
 
 Também é possível iniciar sem argumentos:
 
-O comando `sapiens-agent` sem subcomando abre o menu interativo no PowerShell ou CMD. A configuração pode ser feita pelo PowerShell, pelo navegador de forma explícita ou pelos dois modos. Nenhuma interface abre o navegador automaticamente.
+O comando `sapiens` ou `sapiens-agent` sem subcomando abre diretamente o chat conversacional no PowerShell ou CMD, com histórico, status e comandos `/help`, `/status`, `/model`, `/session`, `/new`, `/reset`, `/clear`, `/stop` e `/exit`. Nenhum navegador é aberto nesse modo. Para acessar o menu operacional completo, use `sapiens menu`; para configurar diretamente, use `sapiens setup` ou `sapiens configure`. A WebUI continua opcional e só é aberta explicitamente.
 
 O menu principal é dividido em 8 áreas: configuração inicial; provider/API;
 canais; gateway/interface; segurança/recursos; memória/identidade/workspace;
@@ -71,7 +71,9 @@ sapiens-agent channel configure suporte
 sapiens-agent channel test suporte
 sapiens-agent channel send suporte 123 "mensagem" --yes
 sapiens-agent provider add ollama --alias local --base-url http://127.0.0.1:11434 --model qwen3
+sapiens-agent provider add cerebras --alias cerebras
 sapiens-agent provider use local
+sapiens-agent route fallback principal,backup
 sapiens-agent provider remove local
 sapiens-agent identity init
 sapiens-agent identity show
@@ -93,7 +95,7 @@ sapiens-agent browser open https://example.com --session pesquisa
 sapiens-agent browser snapshot --session pesquisa
 sapiens-agent browser double-click "text=Example" --session pesquisa --yes
 sapiens-agent browser state-save .\browser-state.json --session pesquisa --yes
-sapiens-agent chat --image .\foto.png "descreva esta imagem"
+sapiens-agent chat --session terminal:local --image .\foto.png "descreva esta imagem"
 sapiens-agent memory list
 sapiens-agent memory search "termo"
 sapiens-agent memory export backup.json
@@ -110,7 +112,26 @@ sapiens-agent chat
 sapiens-agent start
 ```
 
-O servidor escuta apenas `127.0.0.1:8787` por padrão. A WebUI está em `http://127.0.0.1:8787/`; a API é `POST /v1/chat` com `{ "message": "...", "images": [{ "mime_type": "image/png", "data_base64": "..." }], "session": "opcional" }`. São aceitas até 4 imagens de no máximo 10 MiB cada; imagens locais também podem ser anexadas pelo CLI com `chat --image caminho.png`.
+Para usar Cerebras, a opção `cerebras` já preenche o endpoint
+`https://api.cerebras.ai/v1`, o modelo `gpt-oss-120b` e a variável
+`CEREBRAS_API_KEY`. Defina apenas a chave no ambiente do PowerShell (sem
+colocá-la no arquivo de configuração):
+
+```powershell
+$env:CEREBRAS_API_KEY = "sua-chave-da-cerebras"
+sapiens-agent provider add cerebras --alias cerebras
+sapiens-agent provider use cerebras
+sapiens-agent provider test cerebras
+sapiens-agent chat
+```
+
+Se preferir configurar sem decorar comandos, execute `sapiens-agent` no
+PowerShell normal e escolha `Provider e API` → `Provider ativo e fallback`.
+Ali você define o provider principal e os providers reserva, na ordem em que
+serão tentados. O fallback só é usado quando o principal falha ou atinge um
+limite; o chat continua no mesmo PowerShell ou na mesma WebUI.
+
+O servidor escuta apenas `127.0.0.1:8787` por padrão. A WebUI está em `http://127.0.0.1:8787/`; a API é `POST /v1/chat` com `{ "message": "...", "history": [{ "role": "user", "content": "..." }], "images": [{ "mime_type": "image/png", "data_base64": "..." }], "session": "opcional" }`. São aceitas até 4 imagens de no máximo 10 MiB cada; imagens locais também podem ser anexadas pelo CLI com `chat --image caminho.png`.
 
 ## O que está funcional no MVP
 
@@ -118,14 +139,15 @@ O servidor escuta apenas `127.0.0.1:8787` por padrão. A WebUI está em `http://
 - Registry configurável por alias para APIs `chat_completions`/OpenAI-compatible, com seleção por tarefa e fallback.
 - Streaming SSE para providers compatíveis com `chat_completions`, com retries limitados e timeout.
 - Adapters Anthropic Messages e Gemini Generate Content com contexto de sistema, autenticação própria, SSE e custo real por `usage`, validados em servidores simulados.
+- Adapter Cerebras Inference via API OpenAI-compatible, com endpoint/modelo padrão, credencial por `CEREBRAS_API_KEY` e identificação de integração.
 - Adapter OpenAI Responses com `input`/`instructions`, `store=false`, extração de `output_text`, streaming SSE e custo baseado em `usage`, validado em servidor simulado.
 - Orçamento por provider, custo estimado ou calculado a partir do `usage` retornado pelo provider (`cost_source`), e circuit breaker em falhas consecutivas, configuráveis sem expor credenciais.
 - Resposta do gateway com provider efetivamente usado, latência e motivo redigido de fallback; `provider test --json` mede saúde e status.
 - Channel Registry com catálogo amplo, adapters locais CLI/WebChat/HTTP/WebSocket/webhook, configuração por variável de ambiente, allowlist e teste explícito de adapter.
 - Comandos operacionais `restart`, `channel`, `skills`, `logs`, `version` e `help`.
-- Menu interativo no PowerShell/CMD, organizado em 8 áreas, para configurar, iniciar, diagnosticar e sair sem uma pausa silenciosa.
+- Chat conversacional no PowerShell/CMD com banner, histórico, contexto entre mensagens, sessões, status, comandos slash, mensagens multilinha e interrupção cooperativa; o menu interativo completo permanece disponível em `sapiens menu`.
 - Skills reais em `skills/`, com `SKILL.md`, validação, habilitação, desabilitação e rollback. A `skill-forge` analisa receipts repetidos e cria candidatas revisáveis sem conceder permissões externas automaticamente.
-- WebUI local com dashboard, configuração rápida, canais/mídia, skills, recursos e chat; ela usa a mesma configuração do PowerShell e só é aberta com solicitação explícita.
+- WebUI local com dashboard, configuração rápida, canais/mídia, skills, recursos e chat com histórico visual de mensagens, novas conversas, limpeza e contexto enviado ao provider; ela usa a mesma configuração do PowerShell e só é aberta com solicitação explícita.
 - Perfis de recursos `economy`, `balanced`, `performance` e `custom`, com limites configuráveis de GPU, CPU, memória e concorrência. GPU é permitida, mas governada para não monopolizar a máquina.
 - Configuração de áudio opcional para canais multimídia, com limites de tamanho/duração e seleção de provider. O runtime identifica e preserva mídia recebida, mas só envia áudio ao modelo quando houver adapter validado.
 - Credenciais somente por variável de ambiente; configuração redigida via `sapiens-agent config show`.

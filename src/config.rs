@@ -553,6 +553,7 @@ pub fn get_value(config: &AppConfig, key: &str) -> Result<String> {
     let value = match key {
         "initialized" => config.initialized.to_string(),
         "active_provider" => config.active_provider.clone().unwrap_or_default(),
+        "fallback" => config.fallback.join(","),
         "server.bind" => config.server.bind.clone(),
         "server.auth_env" => config.server.auth_env.clone(),
         "shell.allowlist" => config.shell.allowlist.join(","),
@@ -682,6 +683,23 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<()> {
         "active_provider" => {
             find_provider(config, value)?;
             config.active_provider = Some(value.to_string());
+        }
+        "fallback" => {
+            let values = value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            for alias in &values {
+                find_provider(config, alias)?;
+            }
+            if let Some(active) = &config.active_provider
+                && values.iter().any(|alias| alias == active)
+            {
+                anyhow::bail!("o provider ativo não pode ser fallback: {active}");
+            }
+            config.fallback = values;
         }
         "server.bind" => config.server.bind = value.to_string(),
         "server.auth_env" => config.server.auth_env = value.to_string(),
@@ -1142,5 +1160,26 @@ mod tests {
             get_value(&config, "provider.primary.max_tokens").unwrap(),
             "4096"
         );
+    }
+
+    #[test]
+    fn provider_routing_is_gettable_and_rejects_active_as_fallback() {
+        let mut config = AppConfig {
+            active_provider: Some("primary".into()),
+            providers: vec![
+                ProviderConfig {
+                    alias: "primary".into(),
+                    ..Default::default()
+                },
+                ProviderConfig {
+                    alias: "backup".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        set_value(&mut config, "fallback", "backup").expect("fallback");
+        assert_eq!(get_value(&config, "fallback").unwrap(), "backup");
+        assert!(set_value(&mut config, "fallback", "primary").is_err());
     }
 }

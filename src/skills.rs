@@ -102,7 +102,7 @@ pub fn validate(config_path: &Path, name: &str) -> Result<SkillDescriptor> {
     })
 }
 
-pub fn create_candidate(config_path: &Path, name: &str, purpose: &str) -> Result<SkillDescriptor> {
+pub fn preview_candidate(config_path: &Path, name: &str, purpose: &str) -> Result<SkillDescriptor> {
     let normalized = normalize_name(name)?;
     if RESERVED.contains(&normalized.as_str()) {
         bail!("skill name is reserved: {normalized}");
@@ -111,15 +111,30 @@ pub fn create_candidate(config_path: &Path, name: &str, purpose: &str) -> Result
     if directory.exists() {
         bail!("skill already exists: {normalized}");
     }
-    fs::create_dir_all(directory.join("tests"))?;
     let description = if purpose.trim().is_empty() {
         format!("Reusable local workflow for {normalized}.")
     } else {
         purpose.trim().to_string()
     };
+    Ok(SkillDescriptor {
+        name: normalized,
+        description,
+        path: directory,
+        valid: true,
+        enabled: false,
+        scope: "workspace".into(),
+    })
+}
+
+pub fn create_candidate(config_path: &Path, name: &str, purpose: &str) -> Result<SkillDescriptor> {
+    let descriptor = preview_candidate(config_path, name, purpose)?;
+    let normalized = &descriptor.name;
+    let directory = &descriptor.path;
+    let description = &descriptor.description;
+    fs::create_dir_all(directory.join("tests"))?;
     let body = format!(
         "---\nname: {normalized}\ndescription: {description}\n---\n\n# {title}\n\nThis skill was generated as a candidate by skill-forge.\n\n## Purpose\n\n{description}\n\n## Safety\n\nReview permissions and add tests before enabling. External writes, destructive actions, secret input, and network calls require explicit approval.\n",
-        title = title_case(&normalized),
+        title = title_case(normalized),
     );
     fs::write(directory.join("SKILL.md"), body)?;
     fs::write(
@@ -246,6 +261,24 @@ mod tests {
             discover(&config, &["daily-report".into()]).unwrap().len(),
             1
         );
+        // SAFETY: tests serialize access to this process-wide variable.
+        unsafe { std::env::remove_var("SAPIENS_SKILLS_DIR") };
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn previews_a_candidate_without_writing_files() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("sapiens-skills-preview-{}", std::process::id()));
+        let config = root.join("config.toml");
+        let skills_dir = root.join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        // SAFETY: tests serialize access to this process-wide variable.
+        unsafe { std::env::set_var("SAPIENS_SKILLS_DIR", &skills_dir) };
+        let descriptor = preview_candidate(&config, "dry-run-skill", "Preview only").unwrap();
+        assert!(descriptor.valid);
+        assert!(!descriptor.path.exists());
         // SAFETY: tests serialize access to this process-wide variable.
         unsafe { std::env::remove_var("SAPIENS_SKILLS_DIR") };
         let _ = std::fs::remove_dir_all(root);

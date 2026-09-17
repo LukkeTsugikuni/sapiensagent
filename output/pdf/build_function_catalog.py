@@ -40,20 +40,29 @@ def rich(text, style):
 
 def function_rows(items):
     rows = []
+    risk_labels = {
+        "read": "Consulta",
+        "external_write": "Envia/ altera",
+        "destructive": "Apaga/ cancela",
+        "secret_input": "Pede credencial",
+    }
+    risk_colors = {
+        "read": GREEN,
+        "external_write": BLUE,
+        "destructive": colors.HexColor("#B91C1C"),
+        "secret_input": colors.HexColor("#9D174D"),
+    }
     for command, purpose, risk, state in items:
-        risk_color = {
-            "read": GREEN,
-            "external_write": BLUE,
-            "destructive": colors.HexColor("#B91C1C"),
-            "secret_input": colors.HexColor("#9D174D"),
-        }.get(risk, INK)
+        risk_color = risk_colors.get(risk, INK)
+        risk_label = risk_labels.get(risk, risk)
+        state_label = "Disponivel" if state == "pronto" else "Opcional"
         state_color = GREEN if state == "pronto" else AMBER
         rows.append(
             [
                 p(command, styles["Command"]),
                 p(purpose, styles["Cell"]),
-                rich(f'<font color="{risk_color.hexval()}">{escape(risk)}</font>', styles["Cell"]),
-                rich(f'<font color="{state_color.hexval()}">{escape(state)}</font>', styles["Cell"]),
+                rich(f'<font color="{risk_color.hexval()}"><b>{escape(risk_label)}</b></font>', styles["Cell"]),
+                rich(f'<font color="{state_color.hexval()}"><b>{escape(state_label)}</b></font>', styles["Cell"]),
             ]
         )
     return rows
@@ -63,9 +72,9 @@ def function_table(items):
     data = [
         [
             p("Comando", styles["TableHead"]),
-            p("O que faz", styles["TableHead"]),
-            p("Risco", styles["TableHead"]),
-            p("Estado", styles["TableHead"]),
+            p("Para que serve", styles["TableHead"]),
+            p("Cuidado", styles["TableHead"]),
+            p("Situacao", styles["TableHead"]),
         ]
     ] + function_rows(items)
     table = Table(data, colWidths=[48 * mm, 82 * mm, 27 * mm, 27 * mm], repeatRows=1)
@@ -89,12 +98,46 @@ def function_table(items):
 
 def section(title, intro, items):
     return [
+        PageBreak(),
         rich(f'<font color="{BLUE.hexval()}">{escape(title)}</font>', styles["Section"]),
         p(intro, styles["Body"]),
         Spacer(1, 3 * mm),
         function_table(items),
         Spacer(1, 7 * mm),
     ]
+
+
+def guide_cell(title, body):
+    return [
+        rich(f'<font color="{NAVY.hexval()}">{escape(title)}</font>', styles["CardTitle"]),
+        Spacer(1, 1.2 * mm),
+        p(body, styles["CardBody"]),
+    ]
+
+
+def guide_grid(cards, columns=2):
+    rows = []
+    for index in range(0, len(cards), columns):
+        row = [guide_cell(title, body) for title, body in cards[index:index + columns]]
+        while len(row) < columns:
+            row.append("")
+        rows.append(row)
+    table = Table(rows, colWidths=[174 * mm / columns] * columns, hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.6, LINE),
+                ("INNERGRID", (0, 0), (-1, -1), 0.35, LINE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    return table
 
 
 styles = getSampleStyleSheet()
@@ -165,6 +208,48 @@ styles.add(
         textColor=BLUE,
         spaceBefore=2 * mm,
         spaceAfter=3 * mm,
+    )
+)
+styles.add(
+    ParagraphStyle(
+        name="GuideTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=23,
+        leading=27,
+        textColor=NAVY,
+        spaceAfter=4 * mm,
+    )
+)
+styles.add(
+    ParagraphStyle(
+        name="Lead",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=11.2,
+        leading=16,
+        textColor=INK,
+        spaceAfter=4 * mm,
+    )
+)
+styles.add(
+    ParagraphStyle(
+        name="CardTitle",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        fontSize=10,
+        leading=12,
+        textColor=NAVY,
+    )
+)
+styles.add(
+    ParagraphStyle(
+        name="CardBody",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=12,
+        textColor=MUTED,
     )
 )
 styles.add(
@@ -345,27 +430,70 @@ story = [
     p("Versao do runtime: 0.1.0 | Validacao: 121 testes, cargo fmt, cargo clippy e release Windows", styles["CoverSmall"]),
     p("Gateway padrao: 127.0.0.1:8787 | Navegador nao abre automaticamente", styles["CoverSmall"]),
     PageBreak(),
-    rich("Como ler este catalogo", styles["Section"]),
+    rich("Comece por aqui", styles["GuideTitle"]),
     p(
-        "O primeiro bloco de cada linha e o comando ou superficie. O risco indica o nivel usado pela Policy: "
-        "read nao modifica o mundo externo; external_write pode enviar ou alterar dados; destructive remove ou cancela; "
-        "secret_input aceita credenciais sensiveis e nunca as grava em logs ou receipts.",
+        "O Sapiens Agent e um assistente que conversa com modelos de inteligencia artificial e, quando voce permite, usa ferramentas para trabalhar no computador, no navegador e em canais de mensagem.",
+        styles["Lead"],
+    ),
+    p(
+        "Voce nao precisa entender todos os termos para comecar. Use o menu guiado no PowerShell; este catalogo serve para explicar cada parte em linguagem direta e mostrar os comandos para quem quiser se aprofundar.",
         styles["Body"],
     ),
-    rich("Atalhos de inicio", styles["Callout"]),
-    p("1. sapiens-agent setup", styles["Command"]),
-    p("0. sapiens-agent  (menu interativo)", styles["Command"]),
-    p("Configuracao guiada: provider, seguranca, capacidades, interface e recursos por selecao", styles["Body"]),
-    p("Entradas livres ficam em Personalizado/Avancado; Enter aceita o recomendado e 0/Esc cancela", styles["Body"]),
-    p("2. sapiens-agent provider add custom --alias principal --base-url URL --model MODELO", styles["Command"]),
-    p("3. sapiens-agent provider use principal", styles["Command"]),
-    p("4. sapiens-agent start", styles["Command"]),
-    p("5. sapiens-agent chat", styles["Command"]),
-    p("6. sapiens-agent resources status", styles["Command"]),
+    guide_grid(
+        [
+            ("Agent", "O assistente que recebe seu pedido, pensa nos passos e pede autorizacao quando uma acao pode alterar algo."),
+            ("Provider", "O servico ou modelo de IA que responde. Pode ser remoto, como uma API, ou local, como o Ollama."),
+            ("Canal", "O lugar onde voce conversa com o agente: terminal, Telegram, Discord, Slack, WhatsApp e outros."),
+            ("Skill", "Uma habilidade modular que ensina o agente a cumprir um tipo de tarefa com regras proprias."),
+        ]
+    ),
+    Spacer(1, 6 * mm),
+    rich("Comece em 3 passos", styles["Section"]),
+    guide_grid(
+        [
+            ("01  Abra o PowerShell", "Pode ser o PowerShell normal, sem abrir a pasta do projeto."),
+            ("02  Digite  sapiens", "Esse e o atalho simples para abrir o menu principal do agente."),
+            ("03  Escolha uma opcao", "Use as setas ou o numero. Enter aceita a sugestao; 0 ou Esc volta/cancela."),
+        ],
+        columns=3,
+    ),
+    rich("O navegador e opcional", styles["Callout"]),
+    p(
+        "O agente inicia no terminal e nao abre um site sozinho. A WebUI so e usada quando voce escolhe essa opcao. O mesmo vale para browser, computer use, canais, audio, memoria e outras capacidades: elas ficam sob seu controle.",
+        styles["Body"],
+    ),
+    PageBreak(),
+    rich("Mapa do menu principal", styles["GuideTitle"]),
+    p(
+        "A configuracao foi organizada em blocos. Se voce estiver em duvida, comece por Configurar agente e siga as escolhas recomendadas.",
+        styles["Lead"],
+    ),
+    guide_grid(
+        [
+            ("1  Configurar agente", "Define nome, workspace, modelo principal e preferencias basicas."),
+            ("2  Provider e API", "Escolhe o servico de IA, modelo, chave de acesso e provider reserva."),
+            ("3  Canais", "Liga os lugares onde o agente pode receber e enviar mensagens."),
+            ("4  Gateway e interface", "Controla o servico local, sessoes, WebUI e integracoes HTTP."),
+            ("5  Seguranca", "Define aprovacao, allowlist, limites e o que o agente pode fazer."),
+            ("6  Memoria e identidade", "Cuida das preferencias, memoria, sessoes e arquivos do workspace."),
+            ("7  Skills e ferramentas", "Habilita browser, computador, shell, MCP, plugins e automacoes."),
+            ("8  Iniciar, status e sair", "Inicia/paralisa o agente, verifica a saude, mostra ajuda ou fecha o menu."),
+        ]
+    ),
+    Spacer(1, 7 * mm),
+    rich("Como ler as tabelas", styles["Section"]),
+    p(
+        "Cada linha mostra uma funcao. Comando e o nome tecnico; Para que serve explica o resultado. Cuidado indica o que pode acontecer e Situacao mostra se a funcao esta disponivel ou depende de uma instalacao/adapter opcional.",
+        styles["Body"],
+    ),
+    rich("Atalhos para quem prefere comandos", styles["Callout"]),
+    p("sapiens                 abre o menu interativo", styles["Command"]),
+    p("sapiens-agent setup     abre a configuracao guiada", styles["Command"]),
+    p("sapiens-agent start     inicia o gateway local", styles["Command"]),
+    p("sapiens-agent chat      conversa pelo terminal", styles["Command"]),
     Spacer(1, 6 * mm),
     p(
-        "Os wrappers sapiens-agent.cmd e sapiens.cmd permitem usar os aliases no CMD sem que o usuario precise chamar "
-        "target/release/sapiens-agent.exe. Para abrir a WebUI, use explicitamente --open-browser.",
+        "Os atalhos sapiens e sapiens-agent funcionam no PowerShell normal. O arquivo .exe e interno: voce nao precisa procura-lo nem chama-lo diretamente. Para abrir a WebUI, use explicitamente --open-browser.",
         styles["Body"],
     ),
     Spacer(1, 4 * mm),
@@ -374,7 +502,6 @@ story = [
 for title, intro, items in catalog:
     story.extend(section(title, intro, items))
 
-story.append(PageBreak())
 story.extend(
     section(
         "Scheduler, memoria e identidade",
@@ -466,9 +593,35 @@ story.extend(
         ),
         rich("Evidencia de release", styles["Section"]),
         p(
-            "O release Windows validado mede 5.119.488 bytes e possui SHA-256 "
-            "610D5BEE11A15E3B62C736867A649B12EF10580541C2E9BAD862DA5EE6C85D52. "
+            "O release Windows validado mede 5.118.976 bytes e possui SHA-256 "
+            "9A47AB9A86F2A4EC004DCC9302C841DC81219D2007A8C8A44FB8CAD85B8BE1C3. "
             "A documentacao detalhada esta em docs/ARCHITECTURE.md e docs/CAPABILITIES.md.",
+            styles["Body"],
+        ),
+        PageBreak(),
+        rich("Glossario sem complicacao", styles["GuideTitle"]),
+        p(
+            "Algumas palavras aparecem nas tabelas porque sao nomes comuns em sistemas de agentes. Aqui esta a traducao pratica:",
+            styles["Lead"],
+        ),
+        guide_grid(
+            [
+                ("API key", "Chave de acesso a um servico. Trate como senha e nunca envie em mensagens ou logs."),
+                ("Allowlist", "Lista de pessoas, enderecos ou acoes permitidas. O que nao esta na lista fica bloqueado."),
+                ("Fallback", "Provider reserva usado quando o principal falha ou esta indisponivel."),
+                ("Gateway", "Servico local que recebe pedidos e conecta o terminal, canais e ferramentas."),
+                ("Health check", "Teste rapido para saber se um servico esta funcionando."),
+                ("MCP", "Padrao para conectar ferramentas e servidores externos ao agente."),
+                ("Browser / computer use", "Recursos para navegar ou agir no computador. Exigem limites e aprovacao."),
+                ("WebUI", "Tela opcional no navegador para acompanhar o gateway e as sessoes."),
+                ("Workspace", "Pasta de trabalho onde ficam arquivos, configuracoes e resultados permitidos."),
+                ("Receipt", "Registro resumido do que aconteceu, sem expor credenciais."),
+            ]
+        ),
+        Spacer(1, 8 * mm),
+        rich("Regra de ouro", styles["Callout"]),
+        p(
+            "Se uma funcao puder enviar mensagem, alterar arquivo, apagar dados ou usar uma credencial, o agente deve explicar a acao e pedir autorizacao conforme a policy. Em caso de duvida, deixe a capacidade desativada e habilite depois pelo menu.",
             styles["Body"],
         ),
     ]

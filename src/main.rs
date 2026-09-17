@@ -65,6 +65,8 @@ enum Commands {
     Init,
     Setup,
     Configure,
+    /// Abre o menu operacional legado; o comando sem subcomando inicia o chat.
+    Menu,
     Config {
         #[command(subcommand)]
         command: Option<ConfigCommands>,
@@ -80,6 +82,9 @@ enum Commands {
         provider: Option<String>,
         #[arg(long, default_value = "general")]
         task: String,
+        /// Identificador da conversa; a sessão é retomada quando possível.
+        #[arg(long, default_value = "terminal:local")]
+        session: String,
         /// Anexa uma ou mais imagens locais à próxima mensagem.
         #[arg(long = "image", value_name = "PATH")]
         image: Vec<PathBuf>,
@@ -309,7 +314,10 @@ enum IdentityCommands {
 enum SessionCommands {
     List,
     Cleanup {
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Remove sessões sem atualização há pelo menos este número de segundos"
+        )]
         older_than: u64,
     },
     Rotate {
@@ -686,7 +694,16 @@ async fn main() -> Result<()> {
                 if !path.exists() {
                     run_setup(&path, &mut config, &cli, true, false)?;
                 }
-                run_interactive_menu(&path, &mut config, &cli).await?;
+                run_chat(
+                    config,
+                    &path,
+                    None,
+                    "general".into(),
+                    Vec::new(),
+                    None,
+                    "terminal:local".into(),
+                )
+                .await?;
             } else {
                 if !path.exists() {
                     initialize(&path, &mut config, cli.workspace.as_deref())?;
@@ -708,6 +725,11 @@ async fn main() -> Result<()> {
             run_setup(&path, &mut config, &cli, true, false)?;
         }
         Some(Commands::Configure) => run_setup(&path, &mut config, &cli, false, false)?,
+        Some(Commands::Menu) => {
+            print_banner();
+            ensure_initialized(&path, &mut config, &cli)?;
+            run_interactive_menu(&path, &mut config, &cli).await?;
+        }
         Some(Commands::Config { command }) => match command {
             None => run_setup(&path, &mut config, &cli, false, false)?,
             Some(ConfigCommands::Show) => print_redacted(&config)?,
@@ -785,9 +807,10 @@ async fn main() -> Result<()> {
         Some(Commands::Chat {
             provider,
             task,
+            session,
             image,
             prompt,
-        }) => run_chat(config, &path, provider, task, image, prompt).await?,
+        }) => run_chat(config, &path, provider, task, image, prompt, session).await?,
         Some(Commands::Shell { command, timeout }) => {
             run_shell(&config, &path, command, timeout, &cli).await?
         }
@@ -1144,9 +1167,10 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
                         setup_ask("Protocolo avançado", "chat_completions", false, true)?,
                     )
                 } else {
+                    let (base_url, model) = providers::provider_defaults(&kind).unwrap_or(("", ""));
                     (
-                        String::new(),
-                        String::new(),
+                        base_url.to_string(),
+                        model.to_string(),
                         spec.filter(|item| item.credential_hint != "nenhuma")
                             .map(|item| item.credential_hint.to_string())
                             .unwrap_or_default(),
@@ -1221,9 +1245,39 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
                 provider_command(config, path, ProviderCommands::Models { alias }, cli).await?;
             }
             "8" => {
+                run_provider_routing_menu(path, config)?;
+            }
+            "0" | "q" | "Q" => break,
+            _ => println!("  Opção inválida."),
+        }
+    }
+    Ok(())
+}
+
+fn run_provider_routing_menu(path: &Path, config: &mut AppConfig) -> Result<()> {
+    loop {
+        println!("\n  Roteamento das conversas");
+        println!(
+            "  Provider principal: {}",
+            config.active_provider.as_deref().unwrap_or("nenhum")
+        );
+        println!(
+            "  Providers reserva: {}",
+            if config.fallback.is_empty() {
+                "nenhum".to_string()
+            } else {
+                config.fallback.join(", ")
+            }
+        );
+        println!("  [1] Escolher provider principal");
+        println!("  [2] Escolher providers reserva");
+        println!("  [3] Desativar fallback");
+        println!("  [0] Voltar");
+        match menu_choice("Escolha uma opção")?.as_str() {
+            "1" => {
                 let options = configured_provider_options(config);
                 let Some(alias) = choose_catalog_value(
-                    "Provider ativo",
+                    "Provider principal",
                     &options,
                     config.active_provider.as_deref().unwrap_or(""),
                     false,
@@ -1231,18 +1285,83 @@ async fn run_provider_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Re
                 else {
                     continue;
                 };
-                config::find_provider(config, &alias)?;
+                if config.fallback.iter().any(|item| item == &alias) {
+                    config.fallback.retain(|item| item != &alias);
+                }
                 config.active_provider = Some(alias.clone());
                 save_menu_config(path, config)?;
-                let fallback_display = if config.fallback.is_empty() {
-                    "nenhum".to_string()
-                } else {
-                    config.fallback.join(", ")
-                };
-                println!("  Fallback atual preservado: {fallback_display}");
+                println!("  Provider principal: {alias}");
+            }
+            "2" => {
+                let active = config.active_provider.clone();
+                let options = configured_provider_options(config)
+                    .into_iter()
+                    .filter(|(_, alias)| active.as_deref() != Some(alias.as_str()))
+                    .collect::<Vec<_>>();
+                if options.is_empty() {
+                    println!(
+                        "  Configure pelo menos um provider além do principal para criar uma reserva."
+                    );
+                    continue;
+                }
+                println!("\n  Providers reserva (a ordem define a tentativa)");
+                for (index, (display, alias)) in options.iter().enumerate() {
+                    let marker = if config.fallback.iter().any(|item| item == alias) {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!("  [{:>2}] {marker} {display}", index + 1);
+                }
                 println!(
-                    "  Para editar a cadeia manualmente, use [4] Configurar provider existente (avançado)."
+                    "  Digite números separados por vírgula, Enter para manter ou 0 para limpar."
                 );
+                let selection = menu_choice("Reservas")?;
+                if selection == "0" {
+                    config.fallback.clear();
+                } else if !selection.is_empty() {
+                    let mut selected = Vec::new();
+                    let mut invalid = false;
+                    for item in selection
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                    {
+                        match item
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|number| options.get(number.saturating_sub(1)))
+                        {
+                            Some((_, alias)) if !selected.contains(alias) => {
+                                selected.push(alias.clone())
+                            }
+                            Some(_) => {}
+                            None => {
+                                invalid = true;
+                                break;
+                            }
+                        }
+                    }
+                    if invalid {
+                        println!("  Seleção inválida; fallback não foi alterado.");
+                        continue;
+                    }
+                    config.fallback = selected;
+                }
+                save_menu_config(path, config)?;
+                println!(
+                    "  Fallback salvo: {}",
+                    if config.fallback.is_empty() {
+                        "nenhum".into()
+                    } else {
+                        config.fallback.join(", ")
+                    }
+                );
+            }
+            "3" => {
+                config.fallback.clear();
+                save_menu_config(path, config)?;
+                println!("  Fallback desativado.");
             }
             "0" | "q" | "Q" => break,
             _ => println!("  Opção inválida."),
@@ -3993,8 +4112,10 @@ async fn run_chat(
     task: String,
     image_paths: Vec<PathBuf>,
     prompt: Option<String>,
+    mut session_id: String,
 ) -> Result<()> {
-    let registry = ProviderRegistry::new(config);
+    let selected_provider = provider.or_else(|| config.active_provider.clone());
+    let registry = ProviderRegistry::new(config.clone());
     let identity_context = config_path
         .parent()
         .map(sapiens_agent::identity::effective_prompt)
@@ -4006,18 +4127,66 @@ async fn run_chat(
         .collect::<Result<Vec<_>>>()?;
     let one_shot = prompt.as_deref().is_some_and(|value| !value.is_empty());
     let mut input = prompt.unwrap_or_default();
-    if input.is_empty() {
-        println!("Chat do Sapiens Agent. Digite /exit para sair.");
-    }
+    let mut history: Vec<(String, String)> = Vec::new();
+    print_terminal_chat_header(&config, selected_provider.as_deref(), &session_id);
     loop {
         if input.is_empty() {
-            print!("> ");
+            print!("\nVocê › ");
             std::io::stdout().flush()?;
             std::io::stdin().read_line(&mut input)?;
             input = input.trim_end().to_string();
+            while input.ends_with('\\') {
+                input.pop();
+                print!("… ");
+                std::io::stdout().flush()?;
+                let mut continuation = String::new();
+                std::io::stdin().read_line(&mut continuation)?;
+                input.push_str(continuation.trim_end());
+            }
         }
-        if input == "/exit" || input == "/quit" {
+        let command = input.trim();
+        if command == "/exit" || command == "/quit" {
+            println!("\nSessão encerrada. Até logo.");
             break;
+        }
+        if command == "/help" {
+            print_terminal_help();
+            input.clear();
+            continue;
+        }
+        if command == "/status" {
+            print_terminal_status(&config, selected_provider.as_deref(), &session_id);
+            input.clear();
+            continue;
+        }
+        if command == "/model" {
+            print_terminal_models(&config);
+            input.clear();
+            continue;
+        }
+        if command == "/session" {
+            println!("Sessão atual: {session_id}");
+            input.clear();
+            continue;
+        }
+        if command == "/new" || command == "/reset" {
+            history.clear();
+            session_id = format!("terminal:local:{}", unix_timestamp());
+            println!("\nNova sessão: {session_id}");
+            input.clear();
+            continue;
+        }
+        if command == "/clear" {
+            print!("\x1b[2J\x1b[H");
+            std::io::stdout().flush()?;
+            print_terminal_chat_header(&config, selected_provider.as_deref(), &session_id);
+            input.clear();
+            continue;
+        }
+        if command == "/stop" {
+            println!("Nenhuma geração em andamento.");
+            input.clear();
+            continue;
         }
         if !input.is_empty() {
             let assessment = sapiens_agent::policy::assess_prompt(&input);
@@ -4030,17 +4199,33 @@ async fn run_chat(
                 input.clear();
                 continue;
             }
-            match registry
-                .chat_with_context_and_images(
-                    provider.as_deref(),
+            let model_prompt = terminal_conversation_prompt(
+                &history,
+                &sapiens_agent::policy::user_content_for_model(&input),
+            );
+            print!("\nSapiens › ");
+            std::io::stdout().flush()?;
+            let result = tokio::select! {
+                result = registry.chat_with_context_and_images(
+                    selected_provider.as_deref(),
                     &task,
-                    &sapiens_agent::policy::user_content_for_model(&input),
+                    &model_prompt,
                     identity_context.as_deref(),
                     &images,
-                )
-                .await
-            {
-                Ok(answer) => println!("{answer}"),
+                ) => result,
+                _ = tokio::signal::ctrl_c() => {
+                    println!("\nGeração interrompida.");
+                    input.clear();
+                    images.clear();
+                    continue;
+                }
+            };
+            match result {
+                Ok(answer) => {
+                    println!("{answer}");
+                    history.push(("Você".into(), input.clone()));
+                    history.push(("Sapiens".into(), answer));
+                }
                 Err(error) => eprintln!("erro: {error:#}"),
             }
             images.clear();
@@ -4051,6 +4236,81 @@ async fn run_chat(
         input.clear();
     }
     Ok(())
+}
+
+fn terminal_conversation_prompt(history: &[(String, String)], input: &str) -> String {
+    if history.is_empty() {
+        return input.to_string();
+    }
+    let mut prompt = String::from(
+        "Contexto recente da conversa. Use-o para manter continuidade, mas responda somente à mensagem atual:\n",
+    );
+    for (role, content) in history.iter().rev().take(12).rev() {
+        prompt.push_str(role);
+        prompt.push_str(": ");
+        prompt.push_str(content);
+        prompt.push('\n');
+    }
+    prompt.push_str("\nMensagem atual do usuário:\n");
+    prompt.push_str(input);
+    prompt
+}
+
+fn print_terminal_chat_header(config: &AppConfig, provider: Option<&str>, session: &str) {
+    let model = provider
+        .and_then(|alias| config.providers.iter().find(|item| item.alias == alias))
+        .map(|item| item.model.as_str())
+        .unwrap_or("automático");
+    println!("╭────────────────────────────────────────────────────────────╮");
+    println!("│ SAPIENS AGENT · CHAT LOCAL                                │");
+    println!(
+        "│ status: conectado · provider: {} · modelo: {}",
+        provider.unwrap_or("automático"),
+        model
+    );
+    println!("│ sessão: {session}");
+    println!("╰────────────────────────────────────────────────────────────╯");
+    println!("Digite /help para ajuda. O PowerShell permanece nesta tela; /exit encerra.");
+}
+
+fn print_terminal_help() {
+    println!(
+        "\nComandos: /help  /status  /model  /session  /new  /reset  /clear  /stop  /exit\nUse uma barra invertida no fim da linha para continuar uma mensagem na linha seguinte."
+    );
+}
+
+fn print_terminal_status(config: &AppConfig, provider: Option<&str>, session: &str) {
+    let model = provider
+        .and_then(|alias| config.providers.iter().find(|item| item.alias == alias))
+        .map(|item| item.model.as_str())
+        .unwrap_or("não configurado");
+    println!(
+        "\nstatus: gateway local disponível\nprovider: {}\nmodelo: {model}\nsessão: {session}",
+        provider.unwrap_or("automático")
+    );
+}
+
+fn print_terminal_models(config: &AppConfig) {
+    println!("\nModelos configurados:");
+    if config.providers.is_empty() {
+        println!("  nenhum provider configurado");
+    } else {
+        for provider in &config.providers {
+            let marker = if config.active_provider.as_deref() == Some(provider.alias.as_str()) {
+                " *"
+            } else {
+                ""
+            };
+            println!("  {}{} → {}", provider.alias, marker, provider.model);
+        }
+    }
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 fn bind_for(config: &AppConfig, port: Option<u16>) -> Result<String> {
@@ -5091,12 +5351,24 @@ fn skills_command(
             }
         }
         SkillsCommands::Create { name, purpose } => {
-            let descriptor = sapiens_agent::skills::create_candidate(path, &name, &purpose)?;
-            message(
-                cli,
-                "Skill candidata criada; revise e valide antes de habilitar.",
-                serde_json::to_value(descriptor)?,
-            );
+            if cli.dry_run {
+                let descriptor = sapiens_agent::skills::preview_candidate(path, &name, &purpose)?;
+                message(
+                    cli,
+                    "Dry-run: skill candidata não foi criada.",
+                    serde_json::json!({
+                        "saved": false,
+                        "preview": descriptor,
+                    }),
+                );
+            } else {
+                let descriptor = sapiens_agent::skills::create_candidate(path, &name, &purpose)?;
+                message(
+                    cli,
+                    "Skill candidata criada; revise e valide antes de habilitar.",
+                    serde_json::to_value(descriptor)?,
+                );
+            }
         }
         SkillsCommands::Suggest => {
             let suggestions = sapiens_agent::skills::suggestions(path)?;
@@ -5741,8 +6013,16 @@ async fn provider_command(
                 );
                 return Ok(());
             }
-            let base_default = base_url.as_deref().unwrap_or("");
-            let model_default = model.as_deref().unwrap_or("");
+            let (preset_base_url, preset_model) =
+                providers::provider_defaults(&kind).unwrap_or(("", ""));
+            let base_default = base_url
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(preset_base_url);
+            let model_default = model
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(preset_model);
             let key_default = api_key_env
                 .as_deref()
                 .or_else(|| {

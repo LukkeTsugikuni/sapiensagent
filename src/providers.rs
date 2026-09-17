@@ -207,6 +207,13 @@ const CATALOG: &[ProviderSpec] = &[
         adapter: "compatível",
     },
     ProviderSpec {
+        id: "cerebras",
+        label: "Cerebras Inference",
+        protocols: "chat_completions",
+        credential_hint: "CEREBRAS_API_KEY",
+        adapter: "real (OpenAI-compatible)",
+    },
+    ProviderSpec {
         id: "mistral",
         label: "Mistral",
         protocols: "chat_completions",
@@ -292,6 +299,14 @@ pub fn catalog() -> &'static [ProviderSpec] {
 pub fn find_spec(kind: &str) -> Option<&'static ProviderSpec> {
     let normalized = kind.trim().to_ascii_lowercase().replace(['_', ' '], "-");
     catalog().iter().find(|spec| spec.id == normalized)
+}
+
+pub fn provider_defaults(kind: &str) -> Option<(&'static str, &'static str)> {
+    let normalized = kind.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+    match normalized.as_str() {
+        "cerebras" => Some(("https://api.cerebras.ai/v1", "gpt-oss-120b")),
+        _ => None,
+    }
 }
 #[derive(Clone)]
 pub struct ProviderRegistry {
@@ -600,6 +615,9 @@ impl ProviderRegistry {
                 .json(&payload);
             if let Some(key) = &key {
                 request = request.bearer_auth(key);
+            }
+            if provider.kind.eq_ignore_ascii_case("cerebras") {
+                request = request.header("X-Cerebras-3rd-Party-Integration", "sapiens-agent");
             }
             match request
                 .timeout(Duration::from_secs(provider.timeout_secs))
@@ -1127,6 +1145,9 @@ impl ProviderRegistry {
                 builder.header("x-api-key", key)
             }
             Ok(key) if provider.protocol == "gemini" => builder.header("x-goog-api-key", key),
+            Ok(key) if provider.kind.eq_ignore_ascii_case("cerebras") => builder
+                .bearer_auth(key)
+                .header("X-Cerebras-3rd-Party-Integration", "sapiens-agent"),
             Ok(key) => builder.bearer_auth(key),
             Err(_) => builder,
         }
@@ -1558,7 +1579,19 @@ mod tests {
     fn catalog_covers_remote_and_local_provider_families() {
         assert!(catalog().iter().any(|item| item.id == "openai"));
         assert!(catalog().iter().any(|item| item.id == "ollama"));
+        assert!(catalog().iter().any(|item| item.id == "cerebras"));
         assert!(catalog().iter().any(|item| item.id == "custom"));
+    }
+
+    #[test]
+    fn cerebras_has_safe_openai_compatible_defaults() {
+        assert_eq!(
+            provider_defaults("Cerebras"),
+            Some(("https://api.cerebras.ai/v1", "gpt-oss-120b"))
+        );
+        let spec = find_spec("cerebras").expect("Cerebras catalog entry");
+        assert_eq!(spec.protocols, "chat_completions");
+        assert_eq!(spec.credential_hint, "CEREBRAS_API_KEY");
     }
 
     #[test]

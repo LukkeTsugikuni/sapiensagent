@@ -33,7 +33,6 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 struct AppState {
-    registry: ProviderRegistry,
     memory: Arc<Mutex<MemoryStore>>,
     sessions: Arc<Mutex<FileSessionStore>>,
     memory_enabled: bool,
@@ -56,10 +55,18 @@ struct RateBucket {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ChatTurn {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ChatRequest {
     pub message: String,
     #[serde(default)]
     pub images: Vec<crate::providers::ImageInput>,
+    #[serde(default)]
+    pub history: Vec<ChatTurn>,
     pub provider: Option<String>,
     pub task: Option<String>,
     pub session: Option<String>,
@@ -130,7 +137,6 @@ pub async fn serve(config: AppConfig, bind: String, config_path: PathBuf) -> any
         Vec::new()
     };
     let state = AppState {
-        registry: ProviderRegistry::new(config),
         memory: Arc::new(Mutex::new(memory)),
         sessions: Arc::new(Mutex::new(sessions)),
         memory_enabled,
@@ -158,8 +164,12 @@ pub async fn serve(config: AppConfig, bind: String, config_path: PathBuf) -> any
         .route("/favicon.ico", get(favicon))
         .route("/", get(index))
         .route("/v1/status", get(api_status))
+        .route("/v1/providers", get(api_providers))
+        .route("/v1/providers/test", post(api_provider_test))
         .route("/v1/config", get(api_config).post(api_config_update))
         .route("/v1/skills", get(api_skills))
+        .route("/v1/sessions", get(api_sessions))
+        .route("/v1/receipts", get(api_receipts))
         .route("/v1/chat", post(chat))
         .route("/v1/ws", get(websocket))
         .route("/v1/webhooks/{channel}", get(webhook_verify).post(webhook))
@@ -323,6 +333,7 @@ async fn matrix_sync_worker(state: AppState, channel: crate::channels::ChannelCo
                     let request = ChatRequest {
                         message: request_message,
                         images: request_images,
+                        history: Vec::new(),
                         provider: None,
                         task: Some("matrix.inbound".into()),
                         session: Some(format!("matrix:{}:{}", channel_name, message.room_id)),
@@ -556,6 +567,7 @@ async fn signal_receive_worker(state: AppState, channel: crate::channels::Channe
                     let request = ChatRequest {
                         message: request_message,
                         images: request_images,
+                        history: Vec::new(),
                         provider: None,
                         task: Some("signal.inbound".into()),
                         session: Some(format!("signal:{channel_name}:{conversation}")),
@@ -734,29 +746,61 @@ async fn index() -> Html<&'static str> {
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sapiens Agent</title>
+<title>Sapiens Agent — Control</title>
 <style>
-:root{color-scheme:dark;--bg:#080d1c;--panel:#111a2e;--panel2:#17233d;--line:#2a3b61;--text:#eef4ff;--muted:#91a5c9;--accent:#55b8ff;--good:#43d6aa;--warn:#f0b35b;--bad:#ff7184}
-*{box-sizing:border-box}body{margin:0;font:15px Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:radial-gradient(circle at 15% 0,#1b3158 0,var(--bg) 44%);color:var(--text)}
-.shell{display:grid;grid-template-columns:240px 1fr;min-height:100vh}.rail{padding:28px 18px;border-right:1px solid var(--line);background:#0a1124cc}.brand{display:flex;gap:10px;align-items:center;margin-bottom:32px}.mark{width:34px;height:34px;border:2px solid var(--accent);border-radius:10px;display:grid;place-items:center;color:var(--accent);font-weight:800}.brand strong{letter-spacing:.08em}.brand small{display:block;color:var(--muted);margin-top:3px}.nav{display:grid;gap:8px}.nav button{background:transparent;color:var(--muted);text-align:left;border:1px solid transparent;padding:11px 12px;border-radius:9px;cursor:pointer}.nav button.active,.nav button:hover{background:var(--panel2);border-color:var(--line);color:var(--text)}.content{padding:34px clamp(20px,4vw,58px);max-width:1250px;width:100%}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:26px}.eyebrow{color:var(--accent);font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:11px}.top h1{margin:7px 0 5px;font-size:31px}.muted{color:var(--muted)}.pill{border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--good);white-space:nowrap}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.card{background:linear-gradient(145deg,#15213aee,#0d1629ee);border:1px solid var(--line);border-radius:15px;padding:18px;box-shadow:0 18px 45px #0002}.metric{font-size:25px;font-weight:750;margin-top:8px}.label{color:var(--muted);font-size:12px}.section{margin-top:18px}.section h2{font-size:17px;margin:0 0 11px}.two{display:grid;grid-template-columns:1.3fr .7fr;gap:14px}.rows{display:grid;gap:9px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #233452}.row:last-child{border-bottom:0}.tag{font-size:11px;border-radius:999px;padding:4px 8px;border:1px solid var(--line)}.on{color:var(--good)}.off{color:var(--warn)}textarea,input,select{width:100%;background:#091224;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:11px;font:inherit}textarea{min-height:130px;resize:vertical}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:11px}button.primary{background:var(--accent);color:#06101e;border:0;border-radius:9px;padding:10px 15px;font-weight:750;cursor:pointer}button.secondary{background:transparent;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 15px;cursor:pointer}.result{white-space:pre-wrap;min-height:45px;color:#cfe0ff;background:#091224;border:1px solid var(--line);border-radius:9px;padding:12px;margin-top:12px}.hide{display:none}.skill{display:flex;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid #233452}.skill:last-child{border:0}@media(max-width:900px){.shell{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid var(--line);padding:15px}.brand{margin-bottom:14px}.nav{display:flex;overflow:auto}.content{padding:24px 16px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}@media(max-width:520px){.grid{grid-template-columns:1fr}.top{display:block}.pill{display:inline-block;margin-top:14px}}
-</style></head>
-<body><div class="shell"><aside class="rail"><div class="brand"><div class="mark">S</div><div><strong>SAPIENS</strong><small>AGENT CONTROL</small></div></div><nav class="nav"><button class="active" data-tab="overview">Visão geral</button><button data-tab="configure">Configuração</button><button data-tab="channels">Canais e mídia</button><button data-tab="skills">Skills</button><button data-tab="chat">Chat</button></nav></aside>
-<main class="content"><header class="top"><div><div class="eyebrow">Local-first / supervised</div><h1 id="title">Visão geral</h1><div class="muted">Controle o agente sem sair do seu computador.</div></div><div class="pill" id="health">● verificando gateway</div></header>
-<section id="overview" class="tab"><div class="grid"><div class="card"><div class="label">Gateway</div><div class="metric" id="gateway">--</div><div class="muted">processo local</div></div><div class="card"><div class="label">Providers</div><div class="metric" id="providers">--</div><div class="muted">configurados</div></div><div class="card"><div class="label">Canais</div><div class="metric" id="channels">--</div><div class="muted">habilitados</div></div><div class="card"><div class="label">Skills</div><div class="metric" id="skills">--</div><div class="muted">válidas</div></div></div><div class="two section"><div class="card"><h2>Capacidades</h2><div class="rows" id="capabilities"></div></div><div class="card"><h2>Recursos</h2><div class="rows" id="resources"></div></div></div></section>
-<section id="configure" class="tab hide"><div class="card"><h2>Configuração rápida</h2><p class="muted">As alterações usam a mesma configuração do PowerShell e exigem validação.</p><div class="rows"><label>Interface<select id="interfaceMode"><option>powershell</option><option>web</option><option>both</option></select></label><label>Perfil de recursos<select id="resourceProfile"><option>economy</option><option>balanced</option><option>performance</option><option>custom</option></select></label><label><input type="checkbox" id="audioEnabled"> habilitar áudio opcional nos canais</label></div><div class="actions"><button class="primary" onclick="saveConfig()">Salvar configuração</button><button class="secondary" onclick="refresh()">Recarregar</button></div><div class="result" id="configResult" aria-live="polite"></div></div></section>
-<section id="channels" class="tab hide"><div class="two"><div class="card"><h2>Canais registrados</h2><div id="channelList" class="rows"></div></div><div class="card"><h2>Áudio multimodal</h2><p class="muted">Receba áudio por canais compatíveis, transcreva com provider configurado e responda em texto ou voz quando houver suporte. O microfone local não fica sempre ativo.</p><div class="tag off">opt-in / capability-driven</div><div class="result">Limites e provider são controlados pelo CLI em audio.*.</div></div></div></section>
-<section id="skills" class="tab hide"><div class="card"><h2>Skills carregadas</h2><p class="muted">Skills reais possuem SKILL.md, validação e escopo. O skill-forge cria candidatas a partir de repetições.</p><div id="skillList" class="rows"></div></div></section>
-<section id="chat" class="tab hide"><div class="card"><h2>Chat local</h2><p class="muted">Converse pelo gateway sem iniciar outra janela.</p><textarea id="message" placeholder="Digite uma mensagem..."></textarea><div class="actions"><button class="primary" id="send" onclick="sendChat()">Enviar</button></div><div class="result" id="answer" aria-live="polite"></div></div></section>
-</main></div>
+:root{color-scheme:dark;--bg:#0b0d0f;--surface:#121619;--surface2:#171c20;--surface3:#1c2328;--line:#2a343a;--text:#f1f4f2;--muted:#9aa7a8;--accent:#67d8c1;--accent2:#a5f0dc;--good:#72dfae;--warn:#f2bd68;--bad:#ff7d86;--shadow:0 22px 70px #0007}
+*{box-sizing:border-box}body{margin:0;font:14px Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:radial-gradient(circle at 80% -20%,#19332f 0,#0b0d0f 44%);color:var(--text)}button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{display:grid;grid-template-columns:252px 1fr;min-height:100vh}.rail{padding:24px 16px;border-right:1px solid var(--line);background:#0d1012e8;backdrop-filter:blur(14px)}.brand{display:flex;gap:11px;align-items:center;margin:4px 8px 30px}.mark{width:36px;height:36px;border:1px solid var(--accent);border-radius:11px;display:grid;place-items:center;color:var(--accent2);font-weight:850;font-size:18px;box-shadow:0 0 22px #67d8c122}.brand strong{letter-spacing:.14em;font-size:13px}.brand small{display:block;color:var(--muted);font-size:10px;letter-spacing:.1em;margin-top:4px}.nav{display:grid;gap:4px}.nav button{display:flex;align-items:center;gap:10px;background:transparent;color:var(--muted);text-align:left;border:1px solid transparent;padding:10px 12px;border-radius:9px}.nav button.active,.nav button:hover{background:var(--surface3);border-color:var(--line);color:var(--text)}.nav .icon{width:18px;text-align:center;color:var(--accent)}.rail-foot{position:fixed;bottom:18px;width:220px;color:var(--muted);font-size:11px;line-height:1.5}.content{padding:30px clamp(18px,4vw,58px);max-width:1400px;width:100%}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:24px}.eyebrow{color:var(--accent);font-weight:750;letter-spacing:.14em;text-transform:uppercase;font-size:10px}.top h1{margin:7px 0 5px;font-size:30px;letter-spacing:-.02em}.muted{color:var(--muted)}.pill{border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--good);white-space:nowrap;background:#0d1715}.pill.bad{color:var(--bad);background:#1b1013}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card{background:linear-gradient(145deg,#171d20f2,#111517f2);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow)}.card h2{font-size:16px;margin:0 0 7px;letter-spacing:-.01em}.card h3{font-size:13px;margin:0}.metric{font-size:25px;font-weight:800;margin-top:8px}.label{color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase}.section{margin-top:14px}..two{display:grid;grid-template-columns:1.35fr .65fr;gap:12px}..three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}..rows{display:grid;gap:8px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #263034}.row:last-child{border-bottom:0}.tag{font-size:10px;border-radius:999px;padding:4px 8px;border:1px solid var(--line);white-space:nowrap}.on{color:var(--good)}.off{color:var(--warn)}.bad{color:var(--bad)}.provider{display:grid;grid-template-columns:1fr auto;gap:10px;padding:14px 0;border-bottom:1px solid #263034}.provider:last-child{border:0}.provider-meta{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:6px}.provider-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.provider input{max-width:210px}.catalog{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.channel{padding:12px;border:1px solid var(--line);border-radius:11px;background:#111719}.channel strong{display:block;margin-bottom:5px}.skill{display:flex;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid #263034}.skill:last-child{border:0}.notice{border-left:3px solid var(--accent);background:#10211f;padding:11px 13px;border-radius:0 9px 9px 0;color:#c8ded8;line-height:1.5}.empty{padding:18px 0;color:var(--muted)}textarea,input,select{width:100%;background:#0b1012;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px;outline:0}textarea:focus,input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px #67d8c11c}textarea{min-height:142px;resize:vertical}.field{display:grid;gap:6px}.field span{font-size:12px;color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}.primary,.secondary,.danger{border-radius:9px;padding:9px 13px;font-weight:700}.primary{background:var(--accent);color:#07100e;border:0}.primary:hover{background:var(--accent2)}.secondary{background:transparent;color:var(--text);border:1px solid var(--line)}.secondary:hover{background:var(--surface3)}.danger{background:transparent;color:var(--bad);border:1px solid #63323a}.result{white-space:pre-wrap;min-height:42px;color:#d6e5e1;background:#0b1012;border:1px solid var(--line);border-radius:9px;padding:11px;margin-top:11px}.chat-box{display:grid;gap:10px}.chat-head{display:flex;justify-content:space-between;align-items:center;gap:10px}.chat-head select{max-width:300px}.chat-answer{min-height:120px;line-height:1.6}.hide{display:none}.small{font-size:12px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.toast{position:fixed;right:20px;bottom:20px;max-width:360px;background:var(--surface3);border:1px solid var(--line);padding:12px 14px;border-radius:10px;box-shadow:var(--shadow);z-index:10}.toast.good{border-color:#2b705b}.toast.error{border-color:#8f3b47;color:#ffd5d9}@media(max-width:1050px){.shell{grid-template-columns:210px 1fr}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.catalog{grid-template-columns:repeat(2,minmax(0,1fr))}.rail-foot{width:180px}}@media(max-width:760px){.shell{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid var(--line);padding:13px 12px}.brand{margin:2px 5px 13px}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap}.rail-foot{display:none}.content{padding:22px 14px}.two,.three{grid-template-columns:1fr}.top{display:block}.pill{display:inline-block;margin-top:13px}.provider{grid-template-columns:1fr}.provider-actions{justify-content:flex-start}.catalog{grid-template-columns:1fr}}@media(max-width:480px){.grid{grid-template-columns:1fr}.top h1{font-size:26px}}
+.two{display:grid;grid-template-columns:1.35fr .65fr;gap:12px}.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.rows{display:grid;gap:8px}@media(max-width:760px){body{overflow-x:hidden}.shell,.rail,main,.content,.nav{min-width:0}.rail,.nav{width:100%}.two,.three{grid-template-columns:1fr}}
+</style><style>.chat-history{display:grid;gap:10px;max-height:480px;overflow:auto;padding:4px 2px}.chat-message{display:grid;gap:5px;max-width:86%;padding:11px 13px;border:1px solid var(--line);border-radius:12px;line-height:1.6;white-space:pre-wrap}.chat-message.user{justify-self:end;background:#12302b;border-color:#2d6b5d}.chat-message.assistant{justify-self:start;background:#0d1417}.chat-message.system{justify-self:center;color:var(--muted);font-size:12px}.chat-role{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);font-weight:800}.chat-empty{color:var(--muted);padding:24px 8px;text-align:center}</style></head>
+<body><div class="shell"><aside class="rail"><div class="brand"><div class="mark">S</div><div><strong>SAPIENS</strong><small>AGENT CONTROL</small></div></div><nav class="nav" aria-label="Navegação principal">
+<button class="active" data-tab="overview"><span class="icon">◈</span>Visão geral</button><button data-tab="chat"><span class="icon">✦</span>Chat</button><button data-tab="providersPanel"><span class="icon">◌</span>Providers e modelos</button><button data-tab="channelsPanel"><span class="icon">⌁</span>Canais</button><button data-tab="skillsPanel"><span class="icon">◇</span>Skills</button><button data-tab="memoryPanel"><span class="icon">▣</span>Memória e sessões</button><button data-tab="automationPanel"><span class="icon">◷</span>Automações</button><button data-tab="toolsPanel"><span class="icon">⚙</span>Ferramentas</button><button data-tab="securityPanel"><span class="icon">◆</span>Segurança</button><button data-tab="diagnosticsPanel"><span class="icon">≋</span>Logs e diagnóstico</button><button data-tab="configure"><span class="icon">☷</span>Configuração</button>
+</nav><div class="rail-foot">Local-first · supervisionado<br>O navegador é opcional. O PowerShell continua sendo o caminho principal.</div></aside>
+<main class="content"><header class="top"><div><div class="eyebrow">Sapiens Agent · local-first</div><h1 id="title">Visão geral</h1><div class="muted" id="subtitle">Controle seu agente sem sair do computador.</div></div><div class="pill" id="health">● verificando gateway</div></header>
+<section id="overview" class="tab"><div class="grid"><div class="card"><div class="label">Gateway</div><div class="metric" id="gateway">—</div><div class="muted small">processo local</div></div><div class="card"><div class="label">Provider ativo</div><div class="metric" id="activeProvider">—</div><div class="muted small" id="activeModel">modelo não carregado</div></div><div class="card"><div class="label">Canais</div><div class="metric" id="channelCount">—</div><div class="muted small">conectados</div></div><div class="card"><div class="label">Skills</div><div class="metric" id="skillCount">—</div><div class="muted small">válidas</div></div></div><div class="two section"><div class="card"><h2>Capacidades</h2><p class="muted small">Estado real carregado do arquivo de configuração.</p><div class="rows" id="capabilities"></div></div><div class="card"><h2>Recursos</h2><p class="muted small">Limites do perfil atual.</p><div class="rows" id="resources"></div></div></div><div class="card section"><h2>Comece por aqui</h2><div class="three"><div class="notice"><strong>Converse</strong><br><span class="small">Abra o Chat e envie uma mensagem para o provider ativo.</span></div><div class="notice"><strong>Configure</strong><br><span class="small">Use Providers e modelos para testar ou trocar o Ollama.</span></div><div class="notice"><strong>Supervisione</strong><br><span class="small">Permissões e ações externas permanecem sob aprovação.</span></div></div></div></section>
+<section id="chat" class="tab hide"><div class="card chat-box"><div class="chat-head"><div><h2>Chat local</h2><p class="muted small">Converse pelo gateway e acompanhe toda a sessão nesta tela.</p></div><select id="sessionSelect" aria-label="Sessão"><option value="webchat:local">Sessão local</option></select></div><div id="chatHistory" class="chat-history" aria-live="polite"><div class="chat-empty">Pronto para conversar. Envie a primeira mensagem.</div></div><textarea id="message" aria-label="Mensagem" placeholder="Escreva uma tarefa ou pergunta... (Enter envia; Shift+Enter quebra linha)"></textarea><div class="actions"><button class="primary" id="send" onclick="sendChat()">Enviar mensagem</button><button class="secondary" onclick="newSession()">Nova conversa</button><button class="secondary" onclick="clearConversation()">Limpar conversa</button></div><div class="muted small" id="chatMeta">Sessão local · aguardando mensagem</div></div></section>
+<section id="providersPanel" class="tab hide"><div class="card"><h2>Providers e modelos</h2><p class="muted small">A configuração abaixo é a mesma usada pelo PowerShell. Nenhuma chave é exibida.</p><div id="providerList" class="rows"></div></div></section>
+<section id="channelsPanel" class="tab hide"><div class="card"><h2>Canais</h2><p class="muted small">Catálogo de integrações com estado honesto: disponível não significa configurado.</p><div id="channelList" class="catalog"></div><div class="card section"><h2>Áudio e mídia</h2><p class="muted small">Áudio fica desligado por padrão e só aparece como pronto quando houver canal e provider compatíveis.</p><div id="audioState" class="result"></div></div></div></section>
+<section id="skillsPanel" class="tab hide"><div class="card"><h2>Skills carregadas</h2><p class="muted small">Skills reais possuem documentação, validação e escopo. Repetições podem virar candidatas revisáveis.</p><div id="skillList" class="rows"></div></div></section>
+<section id="memoryPanel" class="tab hide"><div class="two"><div class="card"><h2>Memória</h2><p class="muted small">Estado persistente do agente.</p><div id="memoryState" class="rows"></div></div><div class="card"><h2>Sessões recentes</h2><div id="sessionList" class="rows"></div></div></div></section>
+<section id="automationPanel" class="tab hide"><div class="card"><h2>Automações</h2><p class="muted small">Tarefas agendadas ficam sob os limites configurados e podem exigir aprovação.</p><div id="scheduleList" class="rows"></div></div></section>
+<section id="toolsPanel" class="tab hide"><div class="card"><h2>Ferramentas e capacidades</h2><p class="muted small">O painel mostra o que está pronto, opcional ou desligado; ele não promete um adaptador inexistente.</p><div id="toolList" class="rows"></div></div></section>
+<section id="securityPanel" class="tab hide"><div class="two"><div class="card"><h2>Segurança</h2><div id="securityState" class="rows"></div></div><div class="card"><h2>Princípios ativos</h2><div class="notice">Modo supervisionado, gateway local, limites de requisições e credenciais fora da interface. Ações destrutivas e escritas externas devem passar por aprovação.</div></div></div></section>
+<section id="diagnosticsPanel" class="tab hide"><div class="card"><div class="chat-head"><div><h2>Logs e diagnóstico</h2><p class="muted small">Receipts recentes com segredos redigidos.</p></div><button class="secondary" onclick="refresh()">Atualizar</button></div><div id="receiptList" class="rows"></div></div></section>
+<section id="configure" class="tab hide"><div class="card"><h2>Configuração rápida</h2><p class="muted small">As alterações usam a mesma configuração do PowerShell, são validadas antes de salvar e podem exigir reinício do gateway.</p><div class="two"><label class="field"><span>Interface preferida</span><select id="interfaceMode"><option>powershell</option><option>web</option><option>both</option></select></label><label class="field"><span>Perfil de recursos</span><select id="resourceProfile"><option>economy</option><option>balanced</option><option>performance</option><option>custom</option></select></label></div><label class="field section"><span><input type="checkbox" id="audioEnabled"> habilitar áudio opcional nos canais</span></label><div class="actions"><button class="primary" onclick="saveConfig()">Salvar configuração</button><button class="secondary" onclick="refresh()">Recarregar</button></div><div class="result" id="configResult" aria-live="polite"></div></div></section>
+</main></div><div id="toast" class="toast hide" role="status"></div>
 <script>
-const $=id=>document.getElementById(id);let config={};
-document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.add('hide'));$(b.dataset.tab).classList.remove('hide');document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('title').textContent=b.textContent});
-async function api(url,options){let r=await fetch(url,options);let data=await r.json();if(!r.ok)throw Error(data.error||'falha de API');return data}
-function row(name,value,good=true){return '<div class="row"><span>'+name+'</span><span class="tag '+(good?'on':'off')+'">'+value+'</span></div>'}
-async function refresh(){try{let [s,c,k]=await Promise.all([api('/v1/status'),api('/v1/config'),api('/v1/skills')]);config=c;$('health').textContent='● gateway saudável';$('health').className='pill';$('gateway').textContent=s.gateway;$('providers').textContent=s.providers.length;$('channels').textContent=s.channels.filter(x=>x.enabled).length;$('skills').textContent=k.filter(x=>x.valid).length;$('capabilities').innerHTML=Object.entries(s.features).map(([n,v])=>row(n,v?'pronto':'desligado',v)).join('');$('resources').innerHTML=[row('perfil',s.resources.profile),row('GPU máxima',s.resources.max_gpu_percent+'%'),row('memória',s.resources.max_memory_mb+' MB'),row('CPU máxima',s.resources.max_cpu_percent+'%')].join('');$('interfaceMode').value=c.interface.mode;$('resourceProfile').value=c.resources.profile;$('audioEnabled').checked=c.audio.enabled;$('channelList').innerHTML=s.channels.map(x=>row(x.label,x.enabled?'habilitado':'opcional',x.enabled)).join('')||'<span class="muted">Nenhum canal configurado.</span>';$('skillList').innerHTML=k.map(x=>'<div class="skill"><span><strong>'+x.name+'</strong><br><span class="muted">'+(x.description||'sem descrição')+'</span></span><span class="tag '+(x.valid?'on':'off')+'">'+(x.valid?'válida':'revisar')+'</span></div>').join('')||'<span class="muted">Nenhuma skill encontrada.</span>'}catch(e){$('health').textContent='● gateway indisponível';$('health').style.color='var(--bad)';$('configResult').textContent=e.message}}
-async function saveConfig(){let out=$('configResult');try{for(let [key,value] of [['interface.mode',$('interfaceMode').value],['resources.profile',$('resourceProfile').value],['features.audio',$('audioEnabled').checked?'true':'false']])await api('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key,value})});out.textContent='Configuração salva com validação.';await refresh()}catch(e){out.textContent=e.message}}
-async function sendChat(){let text=$('message').value.trim();if(!text){$('answer').textContent='Digite uma mensagem.';return}let b=$('send');b.disabled=true;$('answer').textContent='Processando...';try{let d=await api('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text})});$('answer').textContent=d.answer||JSON.stringify(d,null,2)}catch(e){$('answer').textContent=e.message}finally{b.disabled=false}}
-refresh();
+const $=id=>document.getElementById(id);let config={},snapshot={},chatHistory=[];
+const channelCatalog=[['Telegram','bot','Pronto para configuração'],['Discord','bot','Pronto para configuração'],['Slack','bot','Pronto para configuração'],['WhatsApp','qr','Requer pareamento'],['Signal','secure','Requer signal-cli'],['Matrix','matrix','Requer homeserver'],['Microsoft Teams','bot','Requer app'],['Google Chat','bot','Requer app'],['WebChat','web','Incluído no gateway local'],['Email','mail','Adaptador opcional'],['SMS','sms','Adaptador opcional'],['Voice Call','voice','Plugin opcional']];
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab,b.textContent));
+function showTab(id,label){document.querySelectorAll('.tab').forEach(x=>x.classList.add('hide'));$(id).classList.remove('hide');document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));const active=[...document.querySelectorAll('.nav button')].find(x=>x.dataset.tab===id);if(active)active.classList.add('active');$('title').textContent=label.replace(/^[^A-Za-zÀ-ÿ0-9]*/,'').trim();if(id==='diagnosticsPanel')loadReceipts()}
+async function api(url,options){const r=await fetch(url,options);let data={};try{data=await r.json()}catch(_){data={error:'resposta inválida do gateway'}}if(!r.ok)throw Error(data.error||'falha de API');return data}
+api=async function(url,options){const r=await fetch(url,options);const raw=await r.text();let data={};try{data=raw?JSON.parse(raw):{}}catch(_){data={error:raw||'resposta inválida do gateway'}}if(!r.ok)throw Error(data.error||raw||'falha de API');return data}
+function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function row(name,value,good=true){return '<div class="row"><span>'+esc(name)+'</span><span class="tag '+(good?'on':'off')+'">'+esc(value)+'</span></div>'}
+function toast(message,error=false){const t=$('toast');t.textContent=message;t.className='toast '+(error?'error':'good');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>t.className='toast hide',3600)}
+function providerId(alias){return 'model-'+String(alias).replace(/[^a-z0-9_-]/gi,'_')}
+function activeProvider(){return (snapshot.providers||[]).find(p=>p.alias===config.active_provider)}
+async function refresh(){try{const [s,c,k,p,ss]=await Promise.all([api('/v1/status'),api('/v1/config'),api('/v1/skills'),api('/v1/providers'),api('/v1/sessions')]);config=c;snapshot={status:s,providers:p.providers||[],skills:k,sessions:ss};const active=activeProvider();$('health').textContent='● gateway saudável';$('health').className='pill';$('gateway').textContent=s.gateway;$('activeProvider').textContent=active?.alias||'nenhum';$('activeModel').textContent=active?.model||'modelo não configurado';$('channelCount').textContent=s.channels.filter(x=>x.enabled).length;$('skillCount').textContent=k.filter(x=>x.valid).length;$('capabilities').innerHTML=Object.entries(s.features).map(([n,v])=>row(n,v?'pronto':'desligado',v)).join('');$('resources').innerHTML=[row('perfil',s.resources.profile),row('GPU máxima',s.resources.max_gpu_percent+'%'),row('memória',s.resources.max_memory_mb+' MB'),row('CPU máxima',s.resources.max_cpu_percent+'%')].join('');$('interfaceMode').value=c.interface.mode;$('resourceProfile').value=c.resources.profile;$('audioEnabled').checked=c.audio.enabled;renderProviders();renderChannels();renderSkills();renderMemory();renderAutomation();renderTools();renderSecurity();renderSessions()}catch(e){$('health').textContent='● gateway indisponível';$('health').className='pill bad';$('configResult').textContent=e.message;toast(e.message,true)}}
+function renderProviders(){const list=snapshot.providers||[];const active=config.active_provider||'';const reserves=Array.isArray(config.fallback)?config.fallback:[];const routing='<div class="card" style="margin-bottom:16px"><h3>Roteamento das conversas</h3><p class="muted small">Escolha o provider principal. As reservas só entram quando o principal falhar ou atingir limite.</p><div class="two"><label class="field"><span>Provider principal</span><select id="activeProviderSelect" aria-label="Provider principal">'+(list.length?list.map(p=>'<option value="'+esc(p.alias)+'" '+(p.alias===active?'selected':'')+'>'+esc(p.alias)+' · '+esc(p.model||'modelo não definido')+'</option>').join(''):'<option value="">Nenhum provider configurado</option>')+'</select></label><div class="field"><span>Providers reserva, na ordem</span><div id="fallbackOptions" class="rows">'+(list.filter(p=>p.alias!==active).length?list.filter(p=>p.alias!==active).map(p=>'<label class="small"><input type="checkbox" value="'+esc(p.alias)+'" '+(reserves.includes(p.alias)?'checked':'')+'> '+esc(p.alias)+' · '+esc(p.model||'modelo não definido')+'</label>').join(''):'<span class="muted small">Adicione outro provider para habilitar reservas.</span>')+'</div></div></div><div class="actions"><button class="primary" onclick="saveRouting()" '+(list.length?'':'disabled')+'>Salvar roteamento</button><span class="muted small" id="routingResult"></span></div></div>';const providers=list.length?list.map(p=>{const isActive=p.alias===active;const isReserve=reserves.includes(p.alias);const id=providerId(p.alias);return '<div class="provider"><div><h3>'+esc(p.alias)+' '+(isActive?'<span class="tag on">principal</span>':isReserve?'<span class="tag">reserva</span>':'')+'</h3><div class="provider-meta"><span class="tag">'+esc(p.kind)+'</span><span class="tag">protocolo: '+esc(p.protocol)+'</span><span class="tag '+(p.local?'on':'off')+'">'+(p.local?'local':'remoto')+'</span></div><div class="muted small mono">'+esc(p.base_url)+' · '+esc(p.model)+'</div></div><div class="provider-actions"><input id="'+id+'" value="'+esc(p.model)+'" aria-label="Modelo de '+esc(p.alias)+'"><button class="secondary" onclick="testProvider('+JSON.stringify(p.alias)+',this)">Testar</button><button class="secondary" onclick="saveModel('+JSON.stringify(p.alias)+')">Salvar modelo</button>'+(isActive?'':'<button class="primary" onclick="activateProvider('+JSON.stringify(p.alias)+')">Ativar</button>')+'<div class="small" id="test-'+id+'"></div></div></div>'}).join(''):'<div class="empty">Nenhum provider configurado. Use o menu do PowerShell para adicionar um.</div>';$('providerList').innerHTML=routing+providers}
+function renderChannels(){const configured=snapshot.status?.channels||[];$('channelList').innerHTML=channelCatalog.map(([name,kind,description])=>{const item=configured.find(c=>c.kind===kind||c.name.toLowerCase()===name.toLowerCase());const state=item?.enabled?'habilitado':item?'opcional':'não configurado';return '<div class="channel"><strong>'+esc(name)+'</strong><span class="tag '+(item?.enabled?'on':'off')+'">'+state+'</span><div class="muted small">'+esc(description)+'</div></div>'}).join('');const a=snapshot.status?.audio||{};$('audioState').textContent=a.enabled?'Áudio habilitado na configuração. O canal ainda precisa declarar suporte.':'Áudio desligado por padrão; habilite em Configuração quando houver um canal compatível.'}
+function renderSkills(){const k=snapshot.skills||[];$('skillList').innerHTML=k.length?k.map(x=>'<div class="skill"><span><strong>'+esc(x.name)+'</strong><br><span class="muted small">'+esc(x.description||'sem descrição')+'</span></span><span class="tag '+(x.valid?'on':'off')+'">'+(x.valid?'válida':'revisar')+'</span></div>').join(''):'<div class="empty">Nenhuma skill encontrada.</div>'}
+function renderMemory(){const c=snapshot.status||{};$('memoryState').innerHTML=[row('memória',c.features?.memory?'habilitada':'desligada',c.features?.memory),row('backend',config.memory_backend||'jsonl'),row('retenção',String(config.memory_retention_days||0)+' dias'),row('sessões',String((snapshot.sessions||[]).length))].join('')}
+function renderSessions(){const sessions=snapshot.sessions||[];const current=$('sessionSelect').value;$('sessionSelect').innerHTML=(sessions.length?sessions:[{id:'webchat:local'}]).map(s=>'<option value="'+esc(s.id)+'">'+esc(s.id)+(s.cancelled?' · cancelada':'')+'</option>').join('');if([...$('sessionSelect').options].some(o=>o.value===current))$('sessionSelect').value=current;$('sessionList').innerHTML=sessions.length?sessions.map(s=>row(s.id,s.cancelled?'cancelada':'ativa',!s.cancelled)).join(''):'<div class="empty">Nenhuma sessão criada ainda.</div>'}
+function renderAutomation(){const schedules=config.schedules||[];$('scheduleList').innerHTML=schedules.length?schedules.map(s=>'<div class="row"><span><strong>'+esc(s.id||'tarefa')+'</strong><br><span class="muted small">'+esc(s.task||'sem descrição')+'</span></span><span class="tag '+(s.enabled?'on':'off')+'">'+(s.enabled?'ativa':'pausada')+'</span></div>').join(''):'<div class="empty">Nenhuma automação configurada. O scheduler está disponível pelo PowerShell.</div>'}
+function renderTools(){const f=snapshot.status?.features||{};const names=[['browser','Navegador'],['computer_use','Controle do computador'],['shell','Shell'],['mcp','MCP'],['channels','Canais'],['memory','Memória'],['scheduler','Agendador'],['audio','Áudio']];$('toolList').innerHTML=names.map(([key,label])=>row(label,f[key]?'pronto':'desligado',!!f[key])).join('')}
+function renderSecurity(){const s=snapshot.status||{};$('securityState').innerHTML=[row('modo',config.security?.mode||'supervised',true),row('gateway',config.server?.bind||'local',true),row('rede privada',config.security?.allow_private_networks?'permitida':'bloqueada',!config.security?.allow_private_networks),row('requisições/minuto',config.security?.max_requests_per_minute||'—',true),row('workspace',config.security?.workspace||'—',true)].join('')}
+async function loadReceipts(){try{const data=await api('/v1/receipts');$('receiptList').innerHTML=data.length?data.map(x=>'<div class="result mono">'+esc(JSON.stringify(x))+'</div>').join(''):'<div class="empty">Ainda não há receipts.</div>'}catch(e){$('receiptList').innerHTML='<div class="result">'+esc(e.message)+'</div>'}}
+async function saveConfig(){const out=$('configResult');try{for(const [key,value] of [['interface.mode',$('interfaceMode').value],['resources.profile',$('resourceProfile').value],['features.audio',$('audioEnabled').checked?'true':'false']])await api('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key,value})});out.textContent='Configuração salva com validação. Se o gateway avisar reinício, reinicie pelo menu do PowerShell.';toast('Configuração salva');await refresh()}catch(e){out.textContent=e.message;toast(e.message,true)}}
+async function testProvider(alias,button){const target=$('test-'+providerId(alias));button.disabled=true;target.textContent='testando...';try{const d=await api('/v1/providers/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({alias})});target.textContent='ok · '+d.latency_ms+' ms';target.className='small on';toast(alias+' respondeu corretamente')}catch(e){target.textContent=e.message;target.className='small bad';toast(e.message,true)}finally{button.disabled=false}}
+async function activateProvider(alias){try{await api('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:'active_provider',value:alias})});toast(alias+' agora está ativo');await refresh()}catch(e){toast(e.message,true)}}
+async function saveRouting(){const active=$('activeProviderSelect')?.value||'';const fallback=[...document.querySelectorAll('#fallbackOptions input[type=checkbox]:checked')].map(x=>x.value).filter(x=>x!==active);const result=$('routingResult');if(!active){result.textContent='Escolha um provider principal.';return}try{await api('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:'active_provider',value:active})});await api('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:'fallback',value:fallback.join(',')})});result.textContent='Roteamento salvo.';toast('Provider principal e reservas atualizados');await refresh()}catch(e){result.textContent=e.message;toast(e.message,true)}}
+async function saveModel(alias){try{const value=$(providerId(alias)).value.trim();if(!value)throw Error('informe um modelo');await api('/v1/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:'provider.'+alias+'.model',value})});toast('Modelo salvo; o próximo chat usará a configuração atualizada');await refresh()}catch(e){toast(e.message,true)}}
+function renderChat(){const target=$('chatHistory');if(!chatHistory.length){target.innerHTML='<div class="chat-empty">Pronto para conversar. Envie a primeira mensagem.</div>';return}target.innerHTML=chatHistory.map(item=>'<div class="chat-message '+esc(item.role)+'"><span class="chat-role">'+(item.role==='user'?'Você':item.role==='assistant'?'Sapiens':'Sistema')+'</span><span>'+esc(item.content)+'</span></div>').join('');target.scrollTop=target.scrollHeight}
+function clearConversation(){chatHistory=[];renderChat();$('chatMeta').textContent='Conversa limpa · pronta para nova mensagem';$('message').focus()}
+function newSession(){chatHistory=[];$('sessionSelect').value='webchat:local:'+Date.now();renderChat();$('chatMeta').textContent='Nova conversa · pronta para mensagem';$('message').focus()}
+async function sendChat(){const text=$('message').value.trim();if(!text){$('chatMeta').textContent='Digite uma mensagem antes de enviar.';return}const b=$('send');b.disabled=true;chatHistory.push({role:'user',content:text});renderChat();$('message').value='';$('chatMeta').textContent='Processando no provider local...';try{const d=await api('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,history:chatHistory.slice(0,-1),session:$('sessionSelect').value,channel:'webchat',identity:'local'})});chatHistory.push({role:'assistant',content:d.answer||JSON.stringify(d,null,2)});renderChat();$('chatMeta').textContent=(d.provider||'provider')+' · '+(d.latency_ms||0)+' ms';await refresh()}catch(e){chatHistory.push({role:'system',content:e.message});renderChat();$('chatMeta').textContent='Falha no provider';toast(e.message,true)}finally{b.disabled=false;$('message').focus()}}
+$('message').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});refresh();
+document.addEventListener('click',e=>{const b=e.target.closest('.provider-actions button');if(!b)return;const card=b.closest('.provider');const heading=card?.querySelector('h3');if(!heading)return;const alias=(heading.textContent||'').replace(/\s+ativo\s*$/,'').trim();e.preventDefault();e.stopImmediatePropagation();if(b.textContent.trim()==='Testar')testProvider(alias,b);else if(b.textContent.trim()==='Salvar modelo')saveModel(alias);else if(b.textContent.trim()==='Ativar')activateProvider(alias)},{capture:true});
 </script></body></html>"###,
     )
 }
@@ -778,6 +822,104 @@ async fn api_status(
         "channels": config.channels.iter().map(|c| serde_json::json!({"name": c.name, "kind": c.kind, "enabled": c.enabled})).collect::<Vec<_>>(),
         "skills_valid": skills.iter().filter(|skill| skill.valid).count(),
     })))
+}
+
+async fn api_providers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    Ok(Json(serde_json::json!({
+        "active": config.active_provider,
+        "providers": config.providers.iter().map(|provider| serde_json::json!({
+            "alias": provider.alias,
+            "kind": provider.kind,
+            "protocol": provider.protocol,
+            "base_url": provider.base_url,
+            "model": provider.model,
+            "capabilities": provider.capabilities,
+            "streaming": provider.streaming,
+            "timeout_secs": provider.timeout_secs,
+            "retries": provider.retries,
+            "local": provider.protocol == "ollama" || provider.base_url.starts_with("http://127.0.0.1") || provider.base_url.starts_with("http://localhost"),
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderTestRequest {
+    alias: String,
+}
+
+async fn api_provider_test(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ProviderTestRequest>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    let registry = ProviderRegistry::new(config);
+    let health = registry.health(&request.alias).await.map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("provider test failed: {error}"),
+        )
+    })?;
+    let probe = registry
+        .chat_detailed(
+            Some(&request.alias),
+            "provider_test",
+            "Responda apenas: PROVIDER_OK",
+        )
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("provider generation test failed: {error}"),
+            )
+        })?;
+    Ok(Json(serde_json::json!({
+        "alias": health.alias,
+        "protocol": health.protocol,
+        "ok": health.ok,
+        "status": health.status,
+        "latency_ms": probe.latency_ms,
+        "generation": true,
+        "probe": probe.answer,
+    })))
+}
+
+async fn api_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let sessions = state.sessions.lock().await.list();
+    Ok(Json(
+        serde_json::to_value(sessions).map_err(|error| internal_error(error.into()))?,
+    ))
+}
+
+async fn api_receipts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    authorize(&state, &headers)?;
+    let path = crate::observability::receipts_path(&state.config_path);
+    if !path.exists() {
+        return Ok(Json(serde_json::json!([])));
+    }
+    let values = fs::read_to_string(&path)
+        .map_err(|error| internal_error(error.into()))?
+        .lines()
+        .rev()
+        .take(80)
+        .filter_map(|line| serde_json::from_str::<Value>(&crate::observability::redact(line)).ok())
+        .collect::<Vec<_>>();
+    Ok(Json(serde_json::json!(
+        values.into_iter().rev().collect::<Vec<_>>()
+    )))
 }
 
 async fn api_config(
@@ -928,8 +1070,13 @@ async fn process_chat(
     }
     drop(sessions);
     let model_message = crate::policy::user_content_for_model(&req.message);
-    let outcome = state
-        .registry
+    let model_message = conversation_prompt(&req.history, &model_message);
+    // Reload the canonical config for every chat request. This keeps the
+    // gateway and WebUI synchronized after a PowerShell or WebUI update and
+    // prevents stale provider protocol/model pairs from remaining in memory.
+    let runtime_config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    let registry = ProviderRegistry::new(runtime_config);
+    let outcome = registry
         .chat_detailed_with_context_and_images(
             req.provider.as_deref(),
             task,
@@ -962,6 +1109,30 @@ async fn process_chat(
     })
 }
 
+fn conversation_prompt(history: &[ChatTurn], current: &str) -> String {
+    if history.is_empty() {
+        return current.to_string();
+    }
+    let mut prompt = String::from(
+        "Contexto recente da conversa. Use-o para manter continuidade, mas responda somente à mensagem atual:\n",
+    );
+    for turn in history.iter().rev().take(12).rev() {
+        let role = match turn.role.as_str() {
+            "assistant" => "Sapiens",
+            "user" => "Usuário",
+            _ => "Sistema",
+        };
+        let content: String = turn.content.chars().take(4_000).collect();
+        prompt.push_str(role);
+        prompt.push_str(": ");
+        prompt.push_str(&content);
+        prompt.push('\n');
+    }
+    prompt.push_str("\nMensagem atual do usuário:\n");
+    prompt.push_str(current);
+    prompt
+}
+
 async fn websocket(
     upgrade: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -980,6 +1151,7 @@ async fn websocket_loop(mut socket: WebSocket, state: AppState) {
         let request = serde_json::from_str::<ChatRequest>(&text).unwrap_or(ChatRequest {
             message: text,
             images: Vec::new(),
+            history: Vec::new(),
             provider: None,
             task: None,
             session: None,
@@ -1509,6 +1681,7 @@ async fn process_whatsapp_webhook(
         let request = ChatRequest {
             message,
             images,
+            history: Vec::new(),
             provider: None,
             task: Some("whatsapp.inbound".into()),
             session: Some(session),
@@ -1809,7 +1982,6 @@ mod tests {
             std::fs::create_dir_all(&root).expect("root");
             let config_path = root.join("config.toml");
             let state = AppState {
-                registry: ProviderRegistry::new(AppConfig::default()),
                 memory: Arc::new(Mutex::new(
                     MemoryStore::open_with_retention(root.join("memory.jsonl"), 30)
                         .expect("memory"),
@@ -1862,7 +2034,6 @@ mod tests {
             std::fs::create_dir_all(&root).expect("root");
             let sessions = FileSessionStore::open(root.join("sessions.json")).expect("sessions");
             let state = AppState {
-                registry: ProviderRegistry::new(AppConfig::default()),
                 memory: Arc::new(Mutex::new(
                     MemoryStore::open(root.join("memory.jsonl")).expect("memory"),
                 )),
@@ -1889,6 +2060,7 @@ mod tests {
             let request = ChatRequest {
                 message: "olá".into(),
                 images: Vec::new(),
+                history: Vec::new(),
                 provider: None,
                 task: None,
                 session: None,
@@ -1915,6 +2087,7 @@ mod tests {
             let explicit = ChatRequest {
                 message: "olá".into(),
                 images: Vec::new(),
+                history: Vec::new(),
                 provider: None,
                 task: None,
                 session: Some("webchat:local".into()),
