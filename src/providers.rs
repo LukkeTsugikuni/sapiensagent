@@ -346,8 +346,15 @@ fn register_cooldown(alias: &str, error: &str) {
 }
 
 fn retry_after_seconds(error: &str) -> Option<u64> {
-    let marker = "retry after ";
-    let start = error.to_ascii_lowercase().find(marker)? + marker.len();
+    let lower = error.to_ascii_lowercase();
+    let marker = [
+        "retry after ",
+        "aguarde aproximadamente ",
+        "tente novamente em ",
+    ]
+    .iter()
+    .find(|marker| lower.contains(**marker))?;
+    let start = lower.find(marker)? + marker.len();
     let digits = error[start..]
         .chars()
         .skip_while(|character| !character.is_ascii_digit())

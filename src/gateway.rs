@@ -800,11 +800,28 @@ function clearConversation(){chatHistory=[];renderChat();$('chatMeta').textConte
 function newSession(){chatHistory=[];$('sessionSelect').value='webchat:local:'+Date.now();renderChat();$('chatMeta').textContent='Nova conversa · pronta para mensagem';$('message').focus()}
 async function sendChat(){const text=$('message').value.trim();if(!text){$('chatMeta').textContent='Digite uma mensagem antes de enviar.';return}const b=$('send');b.disabled=true;chatHistory.push({role:'user',content:text});renderChat();$('message').value='';$('chatMeta').textContent='Processando no provider local...';try{const d=await api('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,history:chatHistory.slice(0,-1),session:$('sessionSelect').value,channel:'webchat',identity:'local'})});chatHistory.push({role:'assistant',content:d.answer||JSON.stringify(d,null,2)});renderChat();$('chatMeta').textContent=(d.provider||'provider')+' · '+(d.latency_ms||0)+' ms';await refresh()}catch(e){chatHistory.push({role:'system',content:e.message});renderChat();$('chatMeta').textContent='Falha no provider';toast(e.message,true)}finally{b.disabled=false;$('message').focus()}}
 $('message').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});refresh();
-document.addEventListener('click',e=>{const b=e.target.closest('.provider-actions button');if(!b)return;const card=b.closest('.provider');const heading=card?.querySelector('h3');if(!heading)return;const alias=(heading.textContent||'').replace(/\s+ativo\s*$/,'').trim();e.preventDefault();e.stopImmediatePropagation();if(b.textContent.trim()==='Testar')testProvider(alias,b);else if(b.textContent.trim()==='Salvar modelo')saveModel(alias);else if(b.textContent.trim()==='Ativar')activateProvider(alias)},{capture:true});
 </script><script>
 const sapiensOriginalRefresh=refresh;
+const sapiensOriginalRenderProviders=renderProviders;
 let chatCooldownUntil=0;
 let chatCooldownTimer=null;
+const chatStyle=document.createElement('style');
+chatStyle.textContent='.chat-selectors{display:grid;gap:6px;min-width:250px;align-items:start}.chat-selectors select{max-width:300px}.field.section span{display:flex;align-items:center;gap:8px}.field.section input[type=checkbox]{width:auto;flex:0 0 auto}@media(max-width:760px){.chat-head{align-items:stretch;flex-direction:column}.chat-selectors{min-width:0}.chat-selectors select{max-width:none}}';
+document.head.appendChild(chatStyle);
+renderProviders=function(){
+  sapiensOriginalRenderProviders();
+  document.querySelectorAll('.provider').forEach(card=>{
+    const heading=card.querySelector('h3');
+    const alias=(heading?.textContent||'').replace(/\s+(principal|reserva)\s*$/,'').trim();
+    card.querySelectorAll('.provider-actions button').forEach(button=>{
+      button.removeAttribute('onclick');
+      const action=button.textContent.trim();
+      if(action==='Testar')button.onclick=()=>testProvider(alias,button);
+      else if(action==='Salvar modelo')button.onclick=()=>saveModel(alias);
+      else if(action==='Ativar')button.onclick=()=>activateProvider(alias);
+    });
+  });
+};
 function renderChatProviderSelect(){
   const select=$('chatProviderSelect');
   if(!select)return;
@@ -845,6 +862,9 @@ window.sendChat=async function(){
   if(remaining>0){setChatCooldown(remaining);return}
   const provider=selectedChatProvider();
   const button=$('send');button.disabled=true;
+  const last=chatHistory[chatHistory.length-1];
+  const previous=chatHistory[chatHistory.length-2];
+  if(last?.role==='system'&&last.retryText===text&&previous?.role==='user'&&previous.content===text){chatHistory.splice(-2,2)}
   chatHistory.push({role:'user',content:text});renderChat();
   try{
     const data=await api('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,history:chatHistory.slice(0,-1),provider,session:$('sessionSelect').value,channel:'webchat',identity:'local'})});
