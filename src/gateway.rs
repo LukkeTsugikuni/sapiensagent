@@ -757,7 +757,7 @@ async fn index() -> Html<&'static str> {
 </nav><div class="rail-foot">Local-first · supervisionado<br>O navegador é opcional. O PowerShell continua sendo o caminho principal.</div></aside>
 <main class="content"><header class="top"><div><div class="eyebrow">Sapiens Agent · local-first</div><h1 id="title">Visão geral</h1><div class="muted" id="subtitle">Controle seu agente sem sair do computador.</div></div><div class="pill" id="health">● verificando gateway</div></header>
 <section id="overview" class="tab"><div class="grid"><div class="card"><div class="label">Gateway</div><div class="metric" id="gateway">—</div><div class="muted small">processo local</div></div><div class="card"><div class="label">Provider ativo</div><div class="metric" id="activeProvider">—</div><div class="muted small" id="activeModel">modelo não carregado</div></div><div class="card"><div class="label">Canais</div><div class="metric" id="channelCount">—</div><div class="muted small">conectados</div></div><div class="card"><div class="label">Skills</div><div class="metric" id="skillCount">—</div><div class="muted small">válidas</div></div></div><div class="two section"><div class="card"><h2>Capacidades</h2><p class="muted small">Estado real carregado do arquivo de configuração.</p><div class="rows" id="capabilities"></div></div><div class="card"><h2>Recursos</h2><p class="muted small">Limites do perfil atual.</p><div class="rows" id="resources"></div></div></div><div class="card section"><h2>Comece por aqui</h2><div class="three"><div class="notice"><strong>Converse</strong><br><span class="small">Abra o Chat e envie uma mensagem para o provider ativo.</span></div><div class="notice"><strong>Configure</strong><br><span class="small">Use Providers e modelos para testar ou trocar o Ollama.</span></div><div class="notice"><strong>Supervisione</strong><br><span class="small">Permissões e ações externas permanecem sob aprovação.</span></div></div></div></section>
-<section id="chat" class="tab hide"><div class="card chat-box"><div class="chat-head"><div><h2>Chat local</h2><p class="muted small">Converse pelo gateway e acompanhe toda a sessão nesta tela.</p></div><select id="sessionSelect" aria-label="Sessão"><option value="webchat:local">Sessão local</option></select></div><div id="chatHistory" class="chat-history" aria-live="polite"><div class="chat-empty">Pronto para conversar. Envie a primeira mensagem.</div></div><textarea id="message" aria-label="Mensagem" placeholder="Escreva uma tarefa ou pergunta... (Enter envia; Shift+Enter quebra linha)"></textarea><div class="actions"><button class="primary" id="send" onclick="sendChat()">Enviar mensagem</button><button class="secondary" onclick="newSession()">Nova conversa</button><button class="secondary" onclick="clearConversation()">Limpar conversa</button></div><div class="muted small" id="chatMeta">Sessão local · aguardando mensagem</div></div></section>
+<section id="chat" class="tab hide"><div class="card chat-box"><div class="chat-head"><div><h2>Chat local</h2><p class="muted small">Converse pelo gateway e acompanhe toda a sessão nesta tela.</p></div><div class="chat-selectors"><label class="small muted" for="chatProviderSelect">Provider e modelo</label><select id="chatProviderSelect" aria-label="Provider e modelo"><option value="">Carregando...</option></select><label class="small muted" for="sessionSelect">Sessão</label><select id="sessionSelect" aria-label="Sessão"><option value="webchat:local">Sessão local</option></select></div></div><div id="chatHistory" class="chat-history" aria-live="polite"><div class="chat-empty">Pronto para conversar. Envie a primeira mensagem.</div></div><textarea id="message" aria-label="Mensagem" placeholder="Escreva uma tarefa ou pergunta... (Enter envia; Shift+Enter quebra linha)"></textarea><div class="actions"><button class="primary" id="send" onclick="sendChat()">Enviar mensagem</button><button class="secondary" onclick="newSession()">Nova conversa</button><button class="secondary" onclick="clearConversation()">Limpar conversa</button></div><div class="muted small" id="chatMeta">Sessão local · aguardando mensagem</div></div></section>
 <section id="providersPanel" class="tab hide"><div class="card"><h2>Providers e modelos</h2><p class="muted small">A configuração abaixo é a mesma usada pelo PowerShell. Nenhuma chave é exibida.</p><div id="providerList" class="rows"></div></div></section>
 <section id="channelsPanel" class="tab hide"><div class="card"><h2>Canais</h2><p class="muted small">Catálogo de integrações com estado honesto: disponível não significa configurado.</p><div id="channelList" class="catalog"></div><div class="card section"><h2>Áudio e mídia</h2><p class="muted small">Áudio fica desligado por padrão e só aparece como pronto quando houver canal e provider compatíveis.</p><div id="audioState" class="result"></div></div></div></section>
 <section id="skillsPanel" class="tab hide"><div class="card"><h2>Skills carregadas</h2><p class="muted small">Skills reais possuem documentação, validação e escopo. Repetições podem virar candidatas revisáveis.</p><div id="skillList" class="rows"></div></div></section>
@@ -801,6 +801,66 @@ function newSession(){chatHistory=[];$('sessionSelect').value='webchat:local:'+D
 async function sendChat(){const text=$('message').value.trim();if(!text){$('chatMeta').textContent='Digite uma mensagem antes de enviar.';return}const b=$('send');b.disabled=true;chatHistory.push({role:'user',content:text});renderChat();$('message').value='';$('chatMeta').textContent='Processando no provider local...';try{const d=await api('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,history:chatHistory.slice(0,-1),session:$('sessionSelect').value,channel:'webchat',identity:'local'})});chatHistory.push({role:'assistant',content:d.answer||JSON.stringify(d,null,2)});renderChat();$('chatMeta').textContent=(d.provider||'provider')+' · '+(d.latency_ms||0)+' ms';await refresh()}catch(e){chatHistory.push({role:'system',content:e.message});renderChat();$('chatMeta').textContent='Falha no provider';toast(e.message,true)}finally{b.disabled=false;$('message').focus()}}
 $('message').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat()}});refresh();
 document.addEventListener('click',e=>{const b=e.target.closest('.provider-actions button');if(!b)return;const card=b.closest('.provider');const heading=card?.querySelector('h3');if(!heading)return;const alias=(heading.textContent||'').replace(/\s+ativo\s*$/,'').trim();e.preventDefault();e.stopImmediatePropagation();if(b.textContent.trim()==='Testar')testProvider(alias,b);else if(b.textContent.trim()==='Salvar modelo')saveModel(alias);else if(b.textContent.trim()==='Ativar')activateProvider(alias)},{capture:true});
+</script><script>
+const sapiensOriginalRefresh=refresh;
+let chatCooldownUntil=0;
+let chatCooldownTimer=null;
+function renderChatProviderSelect(){
+  const select=$('chatProviderSelect');
+  if(!select)return;
+  const list=snapshot.providers||[];
+  const stored=sessionStorage.getItem('sapiens.chatProvider')||'';
+  const selected=list.some(p=>p.alias===stored)?stored:(config.active_provider||'');
+  select.innerHTML=list.length?list.map(p=>'<option value="'+esc(p.alias)+'" '+(p.alias===selected?'selected':'')+'>'+esc(p.alias)+' · '+esc(p.model||'modelo não configurado')+'</option>').join(''):'<option value="">Nenhum provider configurado</option>';
+  if(selected)select.value=selected;
+}
+function selectedChatProvider(){return $('chatProviderSelect')?.value||config.active_provider||null}
+function formatChatProvider(alias){const p=(snapshot.providers||[]).find(item=>item.alias===alias);return (alias||'provider')+(p?.model?' · '+p.model:'')}
+function setChatCooldown(seconds){
+  chatCooldownUntil=Date.now()+Math.max(1,seconds)*1000;
+  clearInterval(chatCooldownTimer);
+  const update=()=>{
+    const remaining=Math.ceil((chatCooldownUntil-Date.now())/1000);
+    const button=$('send');
+    if(remaining<=0){clearInterval(chatCooldownTimer);chatCooldownTimer=null;if(button)button.disabled=false;return}
+    if(button)button.disabled=true;
+    $('chatMeta').textContent='Limite temporário atingido · tente novamente em '+remaining+'s';
+  };
+  update();chatCooldownTimer=setInterval(update,1000);
+}
+api=async function(url,options){
+  const response=await fetch(url,options);
+  const raw=await response.text();
+  let data={};try{data=raw?JSON.parse(raw):{}}catch(_){data={error:raw||'resposta inválida do gateway'}}
+  if(!response.ok){const error=new Error(data.error||raw||'falha de API');error.status=response.status;throw error}
+  return data;
+};
+refresh=async function(){await sapiensOriginalRefresh();renderChatProviderSelect()};
+const chatProviderSelect=$('chatProviderSelect');
+if(chatProviderSelect)chatProviderSelect.addEventListener('change',()=>{sessionStorage.setItem('sapiens.chatProvider',chatProviderSelect.value);$('chatMeta').textContent='Pronto · '+formatChatProvider(chatProviderSelect.value)});
+window.sendChat=async function(){
+  const text=$('message').value.trim();
+  if(!text){$('chatMeta').textContent='Digite uma mensagem antes de enviar.';return}
+  const remaining=Math.ceil((chatCooldownUntil-Date.now())/1000);
+  if(remaining>0){setChatCooldown(remaining);return}
+  const provider=selectedChatProvider();
+  const button=$('send');button.disabled=true;
+  chatHistory.push({role:'user',content:text});renderChat();
+  try{
+    const data=await api('/v1/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,history:chatHistory.slice(0,-1),provider,session:$('sessionSelect').value,channel:'webchat',identity:'local'})});
+    $('message').value='';
+    chatHistory.push({role:'assistant',content:data.answer||JSON.stringify(data,null,2)});renderChat();
+    $('chatMeta').textContent=formatChatProvider(data.provider)+' · '+(data.latency_ms||0)+' ms';
+    await refresh();
+  }catch(error){
+    const is429=error.status===429||/HTTP 429|Too Many Requests/i.test(error.message);
+    const friendly=is429?'O limite gratuito do OpenRouter foi atingido. Aguarde alguns segundos ou escolha outro provider/modelo.':error.message;
+    chatHistory.push({role:'system',content:friendly,retryText:text});renderChat();$('message').value=text;
+    $('chatMeta').textContent=is429?'Provider limitado · sua mensagem foi preservada':'Falha no provider';toast(friendly,true);
+    if(is429){const match=error.message.match(/(\d+)\s*segundos?/i);setChatCooldown(match?Number(match[1]):10)}
+  }finally{if(!chatCooldownUntil||chatCooldownUntil<=Date.now())button.disabled=false;$('message').focus()}
+};
+refresh();
 </script></body></html>"###,
     )
 }
@@ -1085,7 +1145,15 @@ async fn process_chat(
             &req.images,
         )
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+        .map_err(|e| {
+            let error = e.to_string();
+            let status = if error.contains("HTTP 429") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, error)
+        })?;
     let fallback_reason = outcome
         .attempts
         .first()

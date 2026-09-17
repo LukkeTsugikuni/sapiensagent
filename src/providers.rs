@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     fs,
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
@@ -305,6 +305,7 @@ pub fn provider_defaults(kind: &str) -> Option<(&'static str, &'static str)> {
     let normalized = kind.trim().to_ascii_lowercase().replace(['_', ' '], "-");
     match normalized.as_str() {
         "cerebras" => Some(("https://api.cerebras.ai/v1", "gpt-oss-120b")),
+        "openrouter" => Some(("https://openrouter.ai/api/v1", "openrouter/free")),
         _ => None,
     }
 }
@@ -314,6 +315,81 @@ pub struct ProviderRegistry {
     client: Client,
     circuits: Arc<Mutex<HashMap<String, CircuitState>>>,
     spent_usd: Arc<Mutex<HashMap<String, f64>>>,
+}
+
+static PROVIDER_COOLDOWNS: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn provider_cooldowns() -> &'static StdMutex<HashMap<String, Instant>> {
+    PROVIDER_COOLDOWNS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn cooldown_remaining(alias: &str) -> Option<u64> {
+    let mut cooldowns = provider_cooldowns().lock().ok()?;
+    let deadline = cooldowns.get(alias).copied()?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        cooldowns.remove(alias);
+        None
+    } else {
+        Some(remaining.as_secs().max(1))
+    }
+}
+
+fn register_cooldown(alias: &str, error: &str) {
+    let seconds = retry_after_seconds(error).unwrap_or(10).clamp(5, 300);
+    if let Ok(mut cooldowns) = provider_cooldowns().lock() {
+        cooldowns.insert(
+            alias.to_string(),
+            Instant::now() + Duration::from_secs(seconds),
+        );
+    }
+}
+
+fn retry_after_seconds(error: &str) -> Option<u64> {
+    let marker = "retry after ";
+    let start = error.to_ascii_lowercase().find(marker)? + marker.len();
+    let digits = error[start..]
+        .chars()
+        .skip_while(|character| !character.is_ascii_digit())
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+fn provider_http_error(
+    provider: &ProviderConfig,
+    status: reqwest::StatusCode,
+    retry_after: Option<&str>,
+) -> String {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let wait = retry_after
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|seconds| format!(" Aguarde aproximadamente {seconds} segundos."))
+            .unwrap_or_else(|| " Aguarde alguns segundos antes de tentar novamente.".into());
+        return format!(
+            "HTTP 429 Too Many Requests — o limite temporário do provider '{}' foi atingido.{}",
+            provider.alias, wait
+        );
+    }
+    if status == reqwest::StatusCode::PAYMENT_REQUIRED {
+        return format!(
+            "HTTP 402 Payment Required — a conta do provider '{}' está sem créditos ou plano ativo.",
+            provider.alias
+        );
+    }
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return format!(
+            "HTTP 401 Unauthorized — verifique a chave do provider '{}'.",
+            provider.alias
+        );
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return format!(
+            "HTTP 404 Not Found — verifique o endpoint e o modelo do provider '{}'.",
+            provider.alias
+        );
+    }
+    format!("HTTP {status}")
 }
 
 impl ProviderRegistry {
@@ -436,6 +512,15 @@ impl ProviderRegistry {
         let mut failures = Vec::new();
         for alias in aliases {
             let provider = find_provider(&self.config, &alias)?;
+            if let Some(remaining) = cooldown_remaining(&alias) {
+                failures.push(ProviderAttempt {
+                    alias,
+                    error: format!(
+                        "provider em cooldown por limite; tente novamente em {remaining}s"
+                    ),
+                });
+                continue;
+            }
             if !self.circuit_allows(&alias).await {
                 failures.push(ProviderAttempt {
                     alias,
@@ -469,10 +554,14 @@ impl ProviderRegistry {
                     });
                 }
                 Err(error) => {
+                    let error_text = error.to_string();
+                    if error_text.contains("HTTP 429") {
+                        register_cooldown(&alias, &error_text);
+                    }
                     self.record_failure(&alias, provider).await;
                     failures.push(ProviderAttempt {
                         alias,
-                        error: crate::observability::redact(&error.to_string()),
+                        error: crate::observability::redact(&error_text),
                     });
                 }
             }
@@ -646,7 +735,11 @@ impl ProviderRegistry {
                 }
                 Ok(response) => {
                     let status = response.status();
-                    last_error = format!("HTTP {status}");
+                    let retry_after = response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok());
+                    last_error = provider_http_error(provider, status, retry_after);
                     if !is_retryable(status) || attempt + 1 == attempts {
                         bail!("provider request failed: {last_error}");
                     }
@@ -730,7 +823,11 @@ impl ProviderRegistry {
                 }
                 Ok(response) => {
                     let status = response.status();
-                    last_error = format!("HTTP {status}");
+                    let retry_after = response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok());
+                    last_error = provider_http_error(provider, status, retry_after);
                     if !is_retryable(status) || attempt + 1 == attempts {
                         bail!("Anthropic request failed: {last_error}");
                     }
@@ -833,7 +930,11 @@ impl ProviderRegistry {
                 }
                 Ok(response) => {
                     let status = response.status();
-                    last_error = format!("HTTP {status}");
+                    let retry_after = response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok());
+                    last_error = provider_http_error(provider, status, retry_after);
                     if !is_retryable(status) || attempt + 1 == attempts {
                         bail!("Gemini request failed: {last_error}");
                     }
@@ -920,7 +1021,11 @@ impl ProviderRegistry {
                 }
                 Ok(response) => {
                     let status = response.status();
-                    last_error = format!("HTTP {status}");
+                    let retry_after = response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok());
+                    last_error = provider_http_error(provider, status, retry_after);
                     if !is_retryable(status) || attempt + 1 == attempts {
                         bail!("Ollama request failed: {last_error}");
                     }
@@ -1007,7 +1112,11 @@ impl ProviderRegistry {
                 }
                 Ok(response) => {
                     let status = response.status();
-                    last_error = format!("HTTP {status}");
+                    let retry_after = response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok());
+                    last_error = provider_http_error(provider, status, retry_after);
                     if !is_retryable(status) || attempt + 1 == attempts {
                         bail!("OpenAI Responses request failed: {last_error}");
                     }
@@ -1166,9 +1275,7 @@ fn resolve_provider_key(provider: &ProviderConfig) -> Result<Option<String>> {
 }
 
 fn is_retryable(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::REQUEST_TIMEOUT
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
+    status == reqwest::StatusCode::REQUEST_TIMEOUT || status.is_server_error()
 }
 
 async fn streamed_text(mut response: reqwest::Response) -> Result<String> {
@@ -1603,6 +1710,31 @@ mod tests {
         let spec = find_spec("cerebras").expect("Cerebras catalog entry");
         assert_eq!(spec.protocols, "chat_completions");
         assert_eq!(spec.credential_hint, "CEREBRAS_API_KEY");
+    }
+
+    #[test]
+    fn openrouter_has_free_model_defaults() {
+        assert_eq!(
+            provider_defaults("OpenRouter"),
+            Some(("https://openrouter.ai/api/v1", "openrouter/free"))
+        );
+    }
+
+    #[test]
+    fn rate_limit_errors_are_human_readable_and_not_retried() {
+        let provider = ProviderConfig {
+            alias: "openrouter".into(),
+            ..Default::default()
+        };
+        let message = provider_http_error(
+            &provider,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            Some("12"),
+        );
+        assert!(message.contains("HTTP 429"));
+        assert!(message.contains("12 segundos"));
+        assert_eq!(retry_after_seconds(&message), Some(12));
+        assert!(!is_retryable(reqwest::StatusCode::TOO_MANY_REQUESTS));
     }
 
     #[test]
