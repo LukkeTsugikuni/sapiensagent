@@ -4203,8 +4203,11 @@ async fn run_chat(
     prompt: Option<String>,
     mut session_id: String,
 ) -> Result<()> {
-    let selected_provider = provider.or_else(|| config.active_provider.clone());
-    let registry = ProviderRegistry::new(config.clone());
+    let explicit_provider = provider;
+    let mut runtime_config = config;
+    let mut selected_provider = explicit_provider
+        .clone()
+        .or_else(|| runtime_config.active_provider.clone());
     let identity_context = config_path
         .parent()
         .map(sapiens_agent::identity::effective_prompt)
@@ -4217,7 +4220,7 @@ async fn run_chat(
     let one_shot = prompt.as_deref().is_some_and(|value| !value.is_empty());
     let mut input = prompt.unwrap_or_default();
     let mut history: Vec<(String, String)> = Vec::new();
-    print_terminal_chat_header(&config, selected_provider.as_deref(), &session_id);
+    print_terminal_chat_header(&runtime_config, selected_provider.as_deref(), &session_id);
     loop {
         if input.is_empty() {
             print!("\nVocê › ");
@@ -4244,12 +4247,17 @@ async fn run_chat(
             continue;
         }
         if command == "/status" {
-            print_terminal_status(&config, selected_provider.as_deref(), &session_id);
+            let current_config = sapiens_agent::config::load(config_path)?;
+            let current_provider = explicit_provider
+                .as_deref()
+                .or(current_config.active_provider.as_deref());
+            print_terminal_status(&current_config, current_provider, &session_id);
             input.clear();
             continue;
         }
         if command == "/model" {
-            print_terminal_models(&config);
+            let current_config = sapiens_agent::config::load(config_path)?;
+            print_terminal_models(&current_config);
             input.clear();
             continue;
         }
@@ -4268,7 +4276,11 @@ async fn run_chat(
         if command == "/clear" {
             print!("\x1b[2J\x1b[H");
             std::io::stdout().flush()?;
-            print_terminal_chat_header(&config, selected_provider.as_deref(), &session_id);
+            let current_config = sapiens_agent::config::load(config_path)?;
+            let current_provider = explicit_provider
+                .as_deref()
+                .or(current_config.active_provider.as_deref());
+            print_terminal_chat_header(&current_config, current_provider, &session_id);
             input.clear();
             continue;
         }
@@ -4278,6 +4290,41 @@ async fn run_chat(
             continue;
         }
         if !input.is_empty() {
+            // PowerShell and WebUI share the TOML file as their source of truth.
+            // Reload it before every request so a provider/model changed in the
+            // menu or browser is reflected in an already-open terminal chat.
+            let latest_config = sapiens_agent::config::load(config_path)?;
+            let latest_provider = explicit_provider
+                .clone()
+                .or_else(|| latest_config.active_provider.clone());
+            let previous_model = selected_provider.as_deref().and_then(|alias| {
+                runtime_config
+                    .providers
+                    .iter()
+                    .find(|item| item.alias == alias)
+                    .map(|item| item.model.clone())
+            });
+            let latest_model = latest_provider.as_deref().and_then(|alias| {
+                latest_config
+                    .providers
+                    .iter()
+                    .find(|item| item.alias == alias)
+                    .map(|item| item.model.clone())
+            });
+            if latest_provider != selected_provider || latest_model != previous_model {
+                selected_provider = latest_provider.clone();
+                runtime_config = latest_config.clone();
+                println!("\nConfiguração atualizada a partir do Sapiens Agent:");
+                print_terminal_chat_header(
+                    &runtime_config,
+                    selected_provider.as_deref(),
+                    &session_id,
+                );
+            } else {
+                runtime_config = latest_config.clone();
+                selected_provider = latest_provider;
+            }
+            let registry = ProviderRegistry::new(runtime_config.clone());
             let assessment = sapiens_agent::policy::assess_prompt(&input);
             if assessment.blocked {
                 eprintln!(

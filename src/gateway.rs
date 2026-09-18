@@ -826,10 +826,21 @@ function renderChatProviderSelect(){
   const select=$('chatProviderSelect');
   if(!select)return;
   const list=snapshot.providers||[];
+  const canonicalAlias=config.active_provider||'';
+  const canonical=list.find(p=>p.alias===canonicalAlias);
+  const canonicalSignature=canonical?[canonical.alias,canonical.model||'',canonical.protocol||'',canonical.base_url||''].join('|'):'';
+  const previousCanonicalSignature=sessionStorage.getItem('sapiens.chatProviderCanonical')||'';
+  const canonicalChanged=Boolean(previousCanonicalSignature&&canonicalSignature&&previousCanonicalSignature!==canonicalSignature);
   const stored=sessionStorage.getItem('sapiens.chatProvider')||'';
-  const selected=list.some(p=>p.alias===stored)?stored:(config.active_provider||'');
+  const storedSignature=sessionStorage.getItem('sapiens.chatProviderSignature')||'';
+  const storedProvider=list.find(p=>p.alias===stored);
+  const storedCurrentSignature=storedProvider?[storedProvider.alias,storedProvider.model||'',storedProvider.protocol||'',storedProvider.base_url||''].join('|'):'';
+  const storedIsCurrent=Boolean(!canonicalChanged&&stored&&storedSignature&&storedSignature===storedCurrentSignature);
+  const selected=storedIsCurrent?stored:canonicalAlias;
+  if((canonicalChanged||stored&&!storedIsCurrent)&&stored){sessionStorage.removeItem('sapiens.chatProvider');sessionStorage.removeItem('sapiens.chatProviderSignature')}
   select.innerHTML=list.length?list.map(p=>'<option value="'+esc(p.alias)+'" '+(p.alias===selected?'selected':'')+'>'+esc(p.alias)+' · '+esc(p.model||'modelo não configurado')+'</option>').join(''):'<option value="">Nenhum provider configurado</option>';
   if(selected)select.value=selected;
+  if(canonicalSignature)sessionStorage.setItem('sapiens.chatProviderCanonical',canonicalSignature);
 }
 function selectedChatProvider(){return $('chatProviderSelect')?.value||config.active_provider||null}
 function formatChatProvider(alias){const p=(snapshot.providers||[]).find(item=>item.alias===alias);return (alias||'provider')+(p?.model?' · '+p.model:'')}
@@ -854,7 +865,13 @@ api=async function(url,options){
 };
 refresh=async function(){await sapiensOriginalRefresh();renderChatProviderSelect()};
 const chatProviderSelect=$('chatProviderSelect');
-if(chatProviderSelect)chatProviderSelect.addEventListener('change',()=>{sessionStorage.setItem('sapiens.chatProvider',chatProviderSelect.value);$('chatMeta').textContent='Pronto · '+formatChatProvider(chatProviderSelect.value)});
+if(chatProviderSelect)chatProviderSelect.addEventListener('change',()=>{
+  const provider=(snapshot.providers||[]).find(item=>item.alias===chatProviderSelect.value);
+  const signature=provider?[provider.alias,provider.model||'',provider.protocol||'',provider.base_url||''].join('|'):'';
+  sessionStorage.setItem('sapiens.chatProvider',chatProviderSelect.value);
+  sessionStorage.setItem('sapiens.chatProviderSignature',signature);
+  $('chatMeta').textContent='Pronto · '+formatChatProvider(chatProviderSelect.value)
+});
 window.sendChat=async function(){
   const text=$('message').value.trim();
   if(!text){$('chatMeta').textContent='Digite uma mensagem antes de enviar.';return}
@@ -893,8 +910,20 @@ async fn api_status(
     let config = crate::config::load(&state.config_path).map_err(internal_error)?;
     let skills =
         crate::skills::discover(&state.config_path, &config.skills).map_err(internal_error)?;
+    let active_model = config
+        .active_provider
+        .as_deref()
+        .and_then(|alias| {
+            config
+                .providers
+                .iter()
+                .find(|provider| provider.alias == alias)
+        })
+        .map(|provider| provider.model.clone());
     Ok(Json(serde_json::json!({
         "gateway": "online",
+        "active_provider": config.active_provider,
+        "active_model": active_model,
         "features": config.features,
         "resources": config.resources,
         "audio": config.audio,
@@ -910,8 +939,19 @@ async fn api_providers(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     authorize(&state, &headers)?;
     let config = crate::config::load(&state.config_path).map_err(internal_error)?;
+    let active_model = config
+        .active_provider
+        .as_deref()
+        .and_then(|alias| {
+            config
+                .providers
+                .iter()
+                .find(|provider| provider.alias == alias)
+        })
+        .map(|provider| provider.model.clone());
     Ok(Json(serde_json::json!({
         "active": config.active_provider,
+        "active_model": active_model,
         "providers": config.providers.iter().map(|provider| serde_json::json!({
             "alias": provider.alias,
             "kind": provider.kind,
@@ -1036,7 +1076,22 @@ async fn api_config_update(
         &format!("key={}", update.key),
         None,
     );
-    Ok(Json(serde_json::json!({"saved": true, "key": update.key})))
+    let active_model = config
+        .active_provider
+        .as_deref()
+        .and_then(|alias| {
+            config
+                .providers
+                .iter()
+                .find(|provider| provider.alias == alias)
+        })
+        .map(|provider| provider.model.clone());
+    Ok(Json(serde_json::json!({
+        "saved": true,
+        "key": update.key,
+        "active_provider": config.active_provider,
+        "active_model": active_model,
+    })))
 }
 
 async fn api_skills(
