@@ -98,6 +98,10 @@ enum Commands {
     },
     Status,
     Doctor,
+    Security {
+        #[command(subcommand)]
+        command: SecurityCommands,
+    },
     Schedule {
         #[command(subcommand)]
         command: ScheduleCommands,
@@ -173,6 +177,16 @@ enum ConfigCommands {
     Export { path: PathBuf },
     Import { path: PathBuf },
     Restore { path: Option<PathBuf> },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum SecurityCommands {
+    /// Mostra o estado do aviso e das proteções principais.
+    Status,
+    /// Executa uma auditoria local sem alterar a configuração.
+    Audit,
+    /// Faz o aviso de segurança aparecer novamente no próximo início.
+    Reset,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -694,6 +708,7 @@ async fn main() -> Result<()> {
                 if !path.exists() {
                     run_setup(&path, &mut config, &cli, true, false)?;
                 }
+                ensure_security_notice(&path, &mut config, &cli)?;
                 run_chat(
                     config,
                     &path,
@@ -728,6 +743,7 @@ async fn main() -> Result<()> {
         Some(Commands::Menu) => {
             print_banner();
             ensure_initialized(&path, &mut config, &cli)?;
+            ensure_security_notice(&path, &mut config, &cli)?;
             run_interactive_menu(&path, &mut config, &cli).await?;
         }
         Some(Commands::Config { command }) => match command {
@@ -788,12 +804,14 @@ async fn main() -> Result<()> {
         Some(Commands::Start) => {
             print_banner();
             ensure_initialized(&path, &mut config, &cli)?;
+            ensure_security_notice(&path, &mut config, &cli)?;
             let bind = bind_for(&config, cli.port)?;
             run_server(config, &path, bind, cli.open_browser && !cli.no_browser).await?;
         }
         Some(Commands::Restart) => {
             print_banner();
             ensure_initialized(&path, &mut config, &cli)?;
+            ensure_security_notice(&path, &mut config, &cli)?;
             stop_server(&path, &cli)?;
             tokio::time::sleep(Duration::from_millis(150)).await;
             let bind = bind_for(&config, cli.port)?;
@@ -802,6 +820,7 @@ async fn main() -> Result<()> {
         Some(Commands::Serve { bind }) => {
             print_banner();
             ensure_initialized(&path, &mut config, &cli)?;
+            ensure_security_notice(&path, &mut config, &cli)?;
             run_server(config, &path, bind, cli.open_browser && !cli.no_browser).await?;
         }
         Some(Commands::Chat {
@@ -810,12 +829,18 @@ async fn main() -> Result<()> {
             session,
             image,
             prompt,
-        }) => run_chat(config, &path, provider, task, image, prompt, session).await?,
+        }) => {
+            ensure_security_notice(&path, &mut config, &cli)?;
+            run_chat(config, &path, provider, task, image, prompt, session).await?
+        }
         Some(Commands::Shell { command, timeout }) => {
             run_shell(&config, &path, command, timeout, &cli).await?
         }
         Some(Commands::Status) => print_status(&config, &path, &cli)?,
         Some(Commands::Doctor) => doctor(&config, &path, &cli)?,
+        Some(Commands::Security { command }) => {
+            security_command(&mut config, &path, command, &cli)?
+        }
         Some(Commands::Schedule { command }) => {
             schedule_command(&mut config, &path, command, &cli)?
         }
@@ -865,6 +890,105 @@ fn config_path(dir: Option<&Path>) -> Result<PathBuf> {
 
 fn print_banner() {
     println!("{BANNER}");
+}
+
+fn ensure_security_notice(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
+    if config.security.notice_acknowledged {
+        return Ok(());
+    }
+    if cli.yes {
+        config.security.notice_acknowledged = true;
+        config::save(path, config)?;
+        println!("Aviso de segurança confirmado por --yes.");
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "confirmação de segurança necessária; execute em um terminal interativo ou use --yes"
+        );
+    }
+
+    print_security_notice();
+    loop {
+        print!("\n  Escolha uma opção [1/2/0]: ");
+        std::io::stdout().flush()?;
+        let mut choice = String::new();
+        std::io::stdin().read_line(&mut choice)?;
+        match choice.trim().to_ascii_lowercase().as_str() {
+            "1" | "s" | "sim" | "y" | "yes" => {
+                config.security.notice_acknowledged = true;
+                config::save(path, config)?;
+                println!(
+                    "\n  Aviso confirmado. O Sapiens Agent continuará com as configurações atuais."
+                );
+                return Ok(());
+            }
+            "2" => print_security_recommendations(),
+            "0" | "n" | "nao" | "não" | "no" => {
+                anyhow::bail!("inicialização cancelada pelo usuário")
+            }
+            _ => println!("  Opção inválida. Escolha 1, 2 ou 0."),
+        }
+    }
+}
+
+fn print_security_notice() {
+    let border = "─".repeat(TERMINAL_STATUS_WIDTH + 2);
+    println!("\n╭{border}╮");
+    print_terminal_box_line("SAPIENS AGENT · AVISO DE SEGURANÇA");
+    print_terminal_box_line("Leia antes de continuar");
+    println!("├{border}┤");
+    for line in [
+        "O Sapiens Agent pode ler arquivos, usar o navegador, executar comandos, acessar APIs, canais e automações quando essas capacidades estiverem habilitadas.",
+        "Instruções maliciosas, arquivos não confiáveis ou mensagens externas podem induzir ações inesperadas.",
+        "Ative somente as permissões necessárias e mantenha o Gateway local sempre que possível.",
+        "Nunca coloque senhas ou chaves de API em arquivos que o agente possa alcançar.",
+    ] {
+        for wrapped in wrap_terminal_line(line, TERMINAL_STATUS_WIDTH) {
+            print_terminal_box_line(&wrapped);
+        }
+    }
+    println!("╰{border}╯");
+    println!("\n  [1] Sim, entendi e quero continuar");
+    println!("  [2] Ver configurações recomendadas");
+    println!("  [0] Sair");
+}
+
+fn print_security_recommendations() {
+    println!("\n  Configurações recomendadas:");
+    println!("  • use o modo supervisionado para exigir aprovação em ações sensíveis;");
+    println!("  • mantenha o Gateway em 127.0.0.1 e a rede privada bloqueada;");
+    println!("  • permita somente comandos, pastas, domínios e canais necessários;");
+    println!("  • mantenha browser, shell, computer_use e MCP desligados até precisar deles;");
+    println!("  • confira o estado com `sapiens security status`;");
+    println!("  • execute a auditoria com `sapiens security audit`;");
+    println!("  • use `sapiens security reset` para rever este aviso depois.");
+}
+
+fn wrap_terminal_line(value: &str, width: usize) -> Vec<String> {
+    let words = value.split_whitespace();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in words {
+        let next_len = if current.is_empty() {
+            word.len()
+        } else {
+            current.len() + 1 + word.len()
+        };
+        if !current.is_empty() && next_len > width {
+            lines.push(current);
+            current = word.to_string();
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 async fn run_interactive_menu(path: &Path, config: &mut AppConfig, cli: &Cli) -> Result<()> {
@@ -2206,6 +2330,7 @@ fn run_setup(
     force_interactive: bool,
 ) -> Result<()> {
     initialize(path, config, cli.workspace.as_deref())?;
+    ensure_security_notice(path, config, cli)?;
     println!(
         "{}",
         if first_run {
@@ -4672,6 +4797,99 @@ fn print_status(config: &AppConfig, path: &Path, cli: &Cli) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn security_command(
+    config: &mut AppConfig,
+    path: &Path,
+    command: SecurityCommands,
+    cli: &Cli,
+) -> Result<()> {
+    match command {
+        SecurityCommands::Status => {
+            let warnings = security_audit_warnings(config);
+            message(
+                cli,
+                if warnings.is_empty() {
+                    "Segurança: nenhuma condição crítica detectada."
+                } else {
+                    "Segurança: a auditoria encontrou pontos para revisar."
+                },
+                serde_json::json!({
+                    "notice_acknowledged": config.security.notice_acknowledged,
+                    "mode": config.security.mode,
+                    "gateway": config.server.bind,
+                    "gateway_auth": !config.server.auth_env.trim().is_empty(),
+                    "private_networks": config.security.allow_private_networks,
+                    "warnings": warnings,
+                }),
+            );
+        }
+        SecurityCommands::Audit => {
+            let warnings = security_audit_warnings(config);
+            message(
+                cli,
+                if warnings.is_empty() {
+                    "Auditoria concluída: nenhuma condição crítica detectada."
+                } else {
+                    "Auditoria concluída: revise os avisos abaixo."
+                },
+                serde_json::json!({
+                    "ok": warnings.is_empty(),
+                    "warnings": warnings,
+                }),
+            );
+            if !cli.json {
+                for warning in security_audit_warnings(config) {
+                    println!("  - {warning}");
+                }
+            }
+        }
+        SecurityCommands::Reset => {
+            config.security.notice_acknowledged = false;
+            config::save(path, config)?;
+            message(
+                cli,
+                "Aviso de segurança redefinido; ele será exibido no próximo início.",
+                serde_json::json!({"notice_acknowledged": false}),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn security_audit_warnings(config: &AppConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let loopback = config.server.bind.starts_with("127.0.0.1")
+        || config.server.bind.starts_with("localhost")
+        || config.server.bind.starts_with("[::1]")
+        || config.server.bind.starts_with("::1");
+    if !loopback {
+        warnings.push("Gateway não está limitado ao computador local".into());
+        if config.server.auth_env.trim().is_empty() {
+            warnings.push("Gateway exposto sem variável de autenticação configurada".into());
+        }
+    }
+    if config.security.allow_private_networks {
+        warnings.push("acesso a redes privadas está permitido".into());
+    }
+    if config.security.mode == "trusted" {
+        warnings.push("modo confiável reduz confirmações antes de ações sensíveis".into());
+    }
+    if config.features.shell && config.shell.allowlist.is_empty() {
+        warnings.push("shell está habilitado sem allowlist de comandos".into());
+    }
+    if config.features.computer_use {
+        warnings
+            .push("computer_use está habilitado; ações na área de trabalho exigem atenção".into());
+    }
+    if config.features.mcp {
+        warnings.push("MCP está habilitado; revise os servidores e ferramentas conectados".into());
+    }
+    if !config.security.notice_acknowledged {
+        warnings.push("o aviso de segurança ainda não foi confirmado".into());
+    }
+    warnings
 }
 
 fn doctor(config: &AppConfig, path: &Path, cli: &Cli) -> Result<()> {

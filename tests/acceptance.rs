@@ -47,7 +47,7 @@ impl Drop for TestServer {
 fn start_test_server(executable: &PathBuf, config_dir: &PathBuf) -> TestServer {
     let pid_path = config_dir.join("sapiens-agent.pid");
     let child = Command::new(executable)
-        .args(["start", "--config-dir"])
+        .args(["--yes", "start", "--config-dir"])
         .arg(config_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -343,6 +343,7 @@ fn cli_chat_image_reaches_a_real_provider_request() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/debug/sapiens-agent.exe"));
     let output = Command::new(&executable)
+        .arg("--yes")
         .arg("--config-dir")
         .arg(&root)
         .arg("chat")

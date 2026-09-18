@@ -139,6 +139,7 @@ pub struct SecurityConfig {
     pub allowed_domains: Vec<String>,
     pub allow_private_networks: bool,
     pub max_requests_per_minute: u32,
+    pub notice_acknowledged: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -348,6 +349,7 @@ impl Default for SecurityConfig {
             allowed_domains: vec![],
             allow_private_networks: false,
             max_requests_per_minute: 60,
+            notice_acknowledged: false,
         }
     }
 }
@@ -403,10 +405,18 @@ pub fn load(path: &Path) -> Result<AppConfig> {
 }
 pub fn save(path: &Path, config: &AppConfig) -> Result<()> {
     validate(config)?;
+    let mut config_to_save = config.clone();
+    if let Ok(previous_text) = fs::read_to_string(path)
+        && let Ok(previous) = toml::from_str::<AppConfig>(&previous_text)
+        && previous.security.notice_acknowledged
+        && security_scope_broadened(&previous, config)
+    {
+        config_to_save.security.notice_acknowledged = false;
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let serialized = toml::to_string_pretty(config)?;
+    let serialized = toml::to_string_pretty(&config_to_save)?;
     let temp_path = path.with_extension(format!(
         "tmp-{}-{}",
         std::process::id(),
@@ -432,6 +442,55 @@ pub fn save(path: &Path, config: &AppConfig) -> Result<()> {
     }
     result?;
     Ok(())
+}
+
+/// Returns true when a configuration change increases the agent's effective
+/// security exposure and therefore requires the terminal warning again.
+pub fn security_scope_broadened(previous: &AppConfig, current: &AppConfig) -> bool {
+    let mode_rank = |mode: &str| match mode {
+        "readonly" => 0,
+        "supervised" => 1,
+        "trusted" => 2,
+        _ => 3,
+    };
+
+    let feature_broadened = (!previous.features.browser && current.features.browser)
+        || (!previous.features.computer_use && current.features.computer_use)
+        || (!previous.features.shell && current.features.shell)
+        || (!previous.features.mcp && current.features.mcp)
+        || (!previous.features.channels && current.features.channels)
+        || (!previous.features.audio && current.features.audio);
+    let allowlist_broadened = current
+        .shell
+        .allowlist
+        .iter()
+        .any(|item| !previous.shell.allowlist.contains(item));
+    let domains_broadened = current
+        .security
+        .allowed_domains
+        .iter()
+        .any(|item| !previous.security.allowed_domains.contains(item));
+    let bind_broadened =
+        is_loopback_bind(&previous.server.bind) && !is_loopback_bind(&current.server.bind);
+    let auth_removed = !previous.server.auth_env.trim().is_empty()
+        && current.server.auth_env.trim().is_empty()
+        && !is_loopback_bind(&current.server.bind);
+
+    mode_rank(&current.security.mode) > mode_rank(&previous.security.mode)
+        || (!previous.security.allow_private_networks && current.security.allow_private_networks)
+        || feature_broadened
+        || allowlist_broadened
+        || domains_broadened
+        || bind_broadened
+        || auth_removed
+}
+
+fn is_loopback_bind(bind: &str) -> bool {
+    let host = bind.rsplit_once(':').map(|(host, _)| host).unwrap_or(bind);
+    matches!(
+        host.trim_matches(['[', ']']),
+        "127.0.0.1" | "localhost" | "::1"
+    )
 }
 
 pub fn validate(config: &AppConfig) -> Result<()> {
@@ -566,6 +625,7 @@ pub fn get_value(config: &AppConfig, key: &str) -> Result<String> {
         "security.allowed_domains" => config.security.allowed_domains.join(","),
         "security.allow_private_networks" => config.security.allow_private_networks.to_string(),
         "security.max_requests_per_minute" => config.security.max_requests_per_minute.to_string(),
+        "security.notice_acknowledged" => config.security.notice_acknowledged.to_string(),
         "memory_retention_days" => config.memory_retention_days.to_string(),
         "memory_backend" => config.memory_backend.clone(),
         "features.browser" => config.features.browser.to_string(),
@@ -762,6 +822,7 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<()> {
         "security.allow_private_networks" => {
             config.security.allow_private_networks = parse_bool(value)?
         }
+        "security.notice_acknowledged" => config.security.notice_acknowledged = parse_bool(value)?,
         "security.max_requests_per_minute" => {
             let limit = value
                 .parse::<u32>()
@@ -1181,5 +1242,50 @@ mod tests {
         set_value(&mut config, "fallback", "backup").expect("fallback");
         assert_eq!(get_value(&config, "fallback").unwrap(), "backup");
         assert!(set_value(&mut config, "fallback", "primary").is_err());
+    }
+
+    #[test]
+    fn security_notice_defaults_to_unacknowledged_and_is_configurable() {
+        let mut config = AppConfig::default();
+        assert!(!config.security.notice_acknowledged);
+        set_value(&mut config, "security.notice_acknowledged", "true")
+            .expect("notice acknowledgement");
+        assert_eq!(
+            get_value(&config, "security.notice_acknowledged").unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn broadening_security_scope_is_detected() {
+        let previous = AppConfig::default();
+        let mut current = previous.clone();
+        current.features.browser = true;
+        assert!(security_scope_broadened(&previous, &current));
+
+        let mut unchanged = previous.clone();
+        unchanged.security.notice_acknowledged = true;
+        assert!(!security_scope_broadened(&previous, &unchanged));
+    }
+
+    #[test]
+    fn save_reopens_notice_after_permission_broadening() {
+        let root = test_root("security-notice");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        let path = root.join("config.toml");
+        let mut first = AppConfig::default();
+        first.security.notice_acknowledged = true;
+        save(&path, &first).expect("first save");
+        let mut broadened = first;
+        broadened.features.browser = true;
+        save(&path, &broadened).expect("broadened save");
+        assert!(
+            !load(&path)
+                .expect("load broadened config")
+                .security
+                .notice_acknowledged
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }
