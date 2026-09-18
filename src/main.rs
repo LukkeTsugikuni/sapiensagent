@@ -4345,20 +4345,46 @@ fn terminal_conversation_prompt(history: &[(String, String)], input: &str) -> St
     prompt
 }
 
+const TERMINAL_STATUS_WIDTH: usize = 66;
+
+fn terminal_fit(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return format!("{value:<width$}");
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut fitted = value
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>();
+    fitted.push('…');
+    fitted
+}
+
+fn print_terminal_box_line(value: &str) {
+    println!("│ {} │", terminal_fit(value, TERMINAL_STATUS_WIDTH));
+}
+
+fn print_terminal_box_field(label: &str, value: &str) {
+    let prefix = format!("{label:<10} ");
+    let available = TERMINAL_STATUS_WIDTH.saturating_sub(prefix.chars().count());
+    println!("│ {}{} │", prefix, terminal_fit(value, available));
+}
+
 fn print_terminal_chat_header(config: &AppConfig, provider: Option<&str>, session: &str) {
     let model = provider
         .and_then(|alias| config.providers.iter().find(|item| item.alias == alias))
         .map(|item| item.model.as_str())
         .unwrap_or("automático");
-    println!("╭────────────────────────────────────────────────────────────╮");
-    println!("│ SAPIENS AGENT · CHAT LOCAL                                │");
-    println!(
-        "│ status: conectado · provider: {} · modelo: {}",
-        provider.unwrap_or("automático"),
-        model
-    );
-    println!("│ sessão: {session}");
-    println!("╰────────────────────────────────────────────────────────────╯");
+    let border = "─".repeat(TERMINAL_STATUS_WIDTH + 2);
+    println!("╭{border}╮");
+    print_terminal_box_line("SAPIENS AGENT · CHAT LOCAL");
+    print_terminal_box_field("status", "● conectado");
+    print_terminal_box_field("provider", provider.unwrap_or("automático"));
+    print_terminal_box_field("modelo", model);
+    print_terminal_box_field("sessão", session);
+    println!("╰{border}╯");
     println!("Digite /help para ajuda. O PowerShell permanece nesta tela; /exit encerra.");
 }
 
@@ -6334,6 +6360,19 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(parse_computer_plan("[]").is_err());
         assert!(parse_computer_plan("not-json").is_err());
+    }
+
+    #[test]
+    fn terminal_status_fit_preserves_width_for_short_and_long_values() {
+        assert_eq!(terminal_fit("abc", 6), "abc   ");
+        assert_eq!(terminal_fit("abcdefghi", 6), "abcde…");
+        assert_eq!(terminal_fit("texto", 0), "");
+        assert_eq!(
+            terminal_fit("modelo muito longo", TERMINAL_STATUS_WIDTH)
+                .chars()
+                .count(),
+            TERMINAL_STATUS_WIDTH
+        );
     }
 
     struct MockComputer {
